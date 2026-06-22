@@ -24,10 +24,13 @@ def analyze_all(candidates: list, kline_override: dict = None) -> list:
         if pb > 0: signals.append(("pullback", pb, price))
         wp = _check_wave_point(kline)
         if wp > 0: signals.append(("wave_point", wp, price))
-        tl = _check_test_line(kline)
+        from strategies.naked_k import detect_pin_bar
+        pb = detect_pin_bar(kline)
+        tl = pb.get("score", 0) if pb else 0
         if tl > 0: signals.append(("test_line", tl, price))
-        nk = _check_naked_k(kline)
-        if nk > 0: signals.append(("naked_k", nk, price))
+        from strategies.naked_k import naked_k_score
+        nk = naked_k_score(kline)
+        if nk >= 50: signals.append(("naked_k", int(nk), price))
         # 123法则 (斯波朗迪)
         s123 = _check_123_rule(kline)
         if s123 > 0: signals.append(("123_rule", s123, price))
