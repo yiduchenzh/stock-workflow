@@ -143,6 +143,21 @@ class AuroraEngine:
         bt = get_backtest_engine()
         self.plans = plan_positions(self.scores, self.capital, self.cfg, bt)
         self.log.info(f"[Step4] {len(self.plans)} plans (Kelly adapted)")
+        # 原则3: 加仓只做盈利股 — 亏损仓位不追加
+        from risk.position_scaling import check_add_position
+        for code, pos in self.account.positions.items() if hasattr(self, 'account') and self.account else []:
+            if hasattr(self, 'account') and self.account:
+                cur = pos.get("current_price", pos.get("avg_cost", 0))
+                add = check_add_position(pos, cur)
+                if add["should_add"]:
+                    # 找到该股的plan并增加仓位
+                    for p in self.plans:
+                        if p.get("code") == code:
+                            p["shares"] += add.get("shares", 0)
+                            p["weight"] = round((p["shares"] * p["entry_price"]) / self.capital, 3)
+                            self.log.info(f"  [Add] {code}: {add['reason']}")
+                elif add.get("reason","").startswith("盈利不足"):
+                    pass  # 正常: 不摊平亏损
 
     def step_risk(self):
         if not self.plans: return
