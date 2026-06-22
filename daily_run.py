@@ -13,7 +13,7 @@ args = parser.parse_args()
 from core.engine import AuroraEngine
 from notify.pusher import push_auction_results, push_trade_signal, push_daily_review
 
-engine = AuroraEngine()
+engine = AuroraEngine('config.yaml')
 
 if args.phase == "auction":
     engine.step_market()
@@ -31,7 +31,6 @@ elif args.phase == "monitor":
     engine.step_position()
     engine.step_risk()
     engine.step_simulate()
-    engine.step_t0()
     engine.step_monitor()
     push_trade_signal(engine)
 elif args.phase == "review":
