@@ -176,9 +176,9 @@ MVP  v2.0  v3.0  修复  P0修复 重写  重塑  缠论  指标  终版
 | 平台 | 账号/地址 |
 |------|---------|
 | GitHub | [yiduchenzh](https://github.com/yiduchenzh) |
-| 雪球 | [yiuchenzh](https://xueqiu.com/u/yiuchenzh) |
-| 知乎 | 待注册 |
-| 知识星球 | 待注册 |
+| 雪球 | (https://xueqiu.com/u/1079180510) |
+| 知乎 | (https://www.zhihu.com/people/zhi-hu-yong-hu-28453) |
+| 知识星球 | https://wx.zsxq.com/footprint/118512581214112?group_id=48885112884848 |
 
 ---
 
