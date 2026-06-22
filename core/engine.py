@@ -152,6 +152,16 @@ class AuroraEngine:
             wd = check_withdraw(acc.total_value, self.capital)
             if wd["should_withdraw"]:
                 self.log.warning(f"[Withdraw] {wd["reason"]}")
+        # 仓位缩放检查: 金字塔加仓+分批止盈
+        from risk.position_scaling import check_add_position, check_scale_out
+        for code, pos in acc.positions.items():
+            cur = pos.get("current_price", pos.get("avg_cost", 0))
+            add = check_add_position(pos, cur)
+            if add["should_add"]:
+                self.log.info(f"  [Scale] {code}: {add['reason']}")
+            scale = check_scale_out(pos, cur)
+            if scale["should_scale"]:
+                self.log.info(f"  [Scale] {code}: {scale['reason']}")
         self.log.info(f"[Step6] {len(self.plans)} opened")
 
     def step_monitor(self):
