@@ -1,22 +1,41 @@
-# Aurora Trading — 配置示例 (复制为 config.yaml 并填入真实值)
+# Aurora Trading
 system:
   name: "Aurora Trading"
   mode: "paper"
   log_level: "INFO"
 
 data:
-  sources: ["tencent", "eastmoney"]
+  sources:
+    - "tencent"
+    - "eastmoney"
   eastmoney_interval: 1.2
   cache_ttl_minutes: 30
 
 screening:
   coarse:
-    min_pe: 0; max_pe: 200
-    min_mcap_yi: 20; max_mcap_yi: 1000
+    min_pe: 0
+    max_pe: 200
+    min_mcap_yi: 20
+    max_mcap_yi: 1000
     min_turnover: 1.0
     min_vol_ratio: 0.8
     exclude_st: true
     min_listed_days: 100
+
+strategies:
+  first_board:
+    enabled: true
+    lookback: 60
+    consolidation: 5
+    vol_ratio: 2.0
+  pullback:
+    enabled: true
+    ratio: 0.382
+    vol_shrink: 0.5
+  wave_point:
+    enabled: true
+    atr_period: 14
+    wave_pct: 3.0
 
 risk:
   max_positions: 5
@@ -25,13 +44,21 @@ risk:
   max_drawdown_pct: -10.0
   max_consecutive_losses: 3
   capital: 1000000
-  position_weights: {strong: 0.30, normal: 0.20, weak: 0.10}
-  stop_loss: {atr_mult: 2.0, hard_pct: 5.0}
-  take_profit: {rr_ratio: 2.0}
+  position_weights:
+    strong: 0.30
+    normal: 0.20
+    weak: 0.10
+  stop_loss:
+    atr_mult: 2.0
+    hard_pct: 5.0
+  take_profit:
+    rr_ratio: 2.0
 
 notify:
-  sct_token: ""  # 填入你的Server酱Token, 或设环境变量 SCT_TOKEN
+  sct_token: ""
 
 backtest:
-  commission: 0.0003; slippage: 0.001; stamp_tax: 0.001
+  commission: 0.0003
+  slippage: 0.001
+  stamp_tax: 0.001
   benchmark: "000300"
