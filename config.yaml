@@ -1,0 +1,208 @@
+# ── A股全流程自动化交易系统 配置文件 ──
+
+# 基础设置
+system:
+  name: "Stock Workflow"
+  version: "3.0.0"
+  dry_run: false          # 模拟模式（不下单不推送）
+  log_level: "INFO"
+  exec_mode: "manual"     # 实盘执行模式: auto(全自动) / manual(人工确认) / hybrid(自动→降级人工)
+
+# 数据源配置
+data:
+  # 优先级: mootdx > 腾讯 > 东财
+  mootdx:
+    hosts:
+      - "110.41.147.114:7709"
+      - "110.41.2.72:7709"
+  tencent:
+    enabled: true
+  eastmoney:
+    enabled: true
+    min_interval: 1.2      # 请求最小间隔(秒) — 防封
+    max_retries: 3
+  # 历史K线天数
+  history_days: 250
+
+# 选股参数
+screening:
+  # 粗筛
+  coarse:
+    min_pe: 0              # 排除负PE
+    max_pe: 200
+    min_mcap: 20           # 最小市值(亿)
+    max_mcap: 1000         # 最大市值(亿)
+    min_turnover: 1.0      # 最小换手率(%)
+    min_vol_ratio: 0.8     # 最小量比
+    exclude_st: true       # 排除ST
+    min_listed_days: 100   # 上市≥100天
+    # 基本面初筛 (东财数据, 不可用时降级跳过)
+    enable_fundamental_filter: true  # 是否启用基本面初筛
+    min_roe: 0             # 最小ROE(%), >0排除亏损股
+    max_pledge_ratio: 50   # 最大质押比例(%), 排除高质押风险
+    min_revenue_growth: -30  # 营收同比增长下限(%), 防业绩暴雷
+    skip_industry: false     # 跳过行业分类(加速非交易日/模拟测试，交易日设false)
+  # 精筛(均线+筹码)
+  fine:
+    ma_filters: [5, 10, 20, 60]   # 均线周期
+    require_ma_above: [20, 60]    # 价格须在MA之上
+    volume_surge_ratio: 1.5       # 放量倍数(相对20日均量)
+  # 集合竞价承接力
+  auction:
+    top_n: 5               # 取承接力前N只
+    cc_threshold: 2.0      # CC>=2.0才算有承接
+
+# 战法配置
+strategies:
+  first_board:
+    enabled: true
+    lookback_days: 60      # 回溯涨停天数
+    consolidation_days: 5  # 横盘整理天数
+    breakout_vol_ratio: 2.0
+  pullback:
+    enabled: true
+    pullback_ratio: 0.382  # 回踩黄金分割位
+    vol_shrink_ratio: 0.5  # 缩量至涨停量50%以下
+  wave_point:
+    enabled: true
+    atr_period: 14
+    wave_pct: 3.0          # 波段幅度%
+  test_line:
+    enabled: true
+    line_tolerance: 0.02   # 影线容差2%
+
+# 仓位管理
+position:
+  max_positions: 5         # 最多持仓5只
+  risk_per_trade: 0.01     # 单笔风险1%
+  capital: 1000000         # 总资金(元)
+  position_weights:
+    strong: 0.30           # 强信号仓位
+    normal: 0.20           # 普通信号仓位
+    weak: 0.10             # 弱信号仓位
+
+# 止损止盈
+risk:
+  stop_loss:
+    support_below_pct: 3.0   # 支撑下方3%
+    price_atr_mult: 2.0      # ATR倍数止损
+    max_loss_pct: 5.0        # 硬止损5%
+  take_profit:
+    rr_ratio: 2.0            # 盈亏比2:1
+    trailing:
+      profit_5pct: "cost"    # +5%→成本价
+      profit_10pct: "5pct"   # +10%→+5%位
+      profit_20pct: "10pct"  # +20%→+10%位
+
+# 监控
+monitor:
+  interval: 30               # 轮询间隔(秒)
+  trading_hours:
+    morning_start: "09:30"
+    morning_end: "11:30"
+    afternoon_start: "13:00"
+    afternoon_end: "15:00"
+  alerts:
+    stop_loss: true
+    take_profit: true
+    breakout: true           # 破位预警
+    volume_surge: true
+
+# 推送
+notify:
+  # Server酱 Turbo
+  sct_token: "SCT363204TA-0KY83fVaYBl4skZT5a7k61MA"
+  # 企业微信
+  wechat_webhook: ""
+  # 钉钉
+  dingtalk_webhook: ""
+
+# 回测
+backtest:
+  start_date: "2023-01-01"
+  end_date: "2026-06-01"
+  initial_capital: 1000000
+  commission: 0.0003          # 佣金0.03%
+  slippage: 0.001             # 滑点0.1%
+  benchmark: "000300"         # 沪深300基准
+
+# 复盘
+review:
+  dimensions: [选股准确率, 战法胜率, 盈亏比, 最大回撤, 仓位管理]
+  weekly_report: true
+  monthly_report: true
+
+
+# ── 日内T+0交易 ──
+intraday_t0:
+  enabled: true                # 是否启用T+0
+  max_daily_t0_per_stock: 3    # 单股单日最大T+0次数
+  max_total_t0_daily: 10       # 全账户单日最大T+0总数
+  min_profit_target_pct: 0.5   # 最小利润目标(%)
+  max_loss_per_t0_pct: 0.3     # 单次T+0最大亏损(%)
+  position_ratio: 0.3          # T+0仓位占持仓比例
+  min_volatility_atr_pct: 2.0  # 最小波动率要求(ATR%)
+  signal_threshold: 60         # 信号评分阈值(满分100)
+  min_volume_ratio: 1.2        # 最小量比
+  vwap_deviation_sigma: 2.0    # VWAP偏离标准差倍数
+
+# ── 仓位动态管理（加仓/减仓）──
+position_scaling:
+  enabled: true                # 是否启用仓位管理
+  pyramid_enabled: true        # 是否启用金字塔加仓
+  scale_out_enabled: true      # 是否启用分批止盈
+  max_adds_per_stock_daily: 2  # 单股单日最大加仓次数
+  max_total_position_pct: 20.0 # 单股最大仓位(%)
+  min_profit_to_add_pct: 2.0   # 最小盈利%才允许加仓
+  min_volume_ratio: 1.2        # 加仓最小量比
+  stop_below_ma: true          # 跌破均线是否减仓
+  scale_out_plan:              # 分批止盈计划
+    - {pnl: 10, ratio: 0.33, stop: 5}   # +10%减1/3, 止损上移+5%
+    - {pnl: 20, ratio: 0.33, stop: 10}  # +20%再减1/3, 止损+10%
+    - {pnl: 30, ratio: 0.50, stop: 20}  # +30%减到底仓, 止损+20%
+  pyramid_ratios: [0.5, 0.3, 0.2]       # 金字塔加仓比例(递减)
+
+# ═══════════════════════════════════════════════
+# 三级联动选股 (大盘→板块→个股)
+cascade:
+  enabled: true
+  top_n_sectors: 5          # 取前N个强势板块
+  stocks_per_sector: 5      # 每板块取前M只个股
+  prefer_sectors: []        # 优先关注的板块 (如 ["半导体","AI"])
+  exclude_sectors:          # 排除的板块
+    - "ST板块"
+    - "退市整理"
+    - "*ST板块"
+
+# 增强盘中监控
+enhanced_monitor:
+  enabled: true
+  interval: 10              # 轮询间隔(秒)
+  vwap_enabled: true
+  sector_enabled: true
+  pattern_enabled: true
+  divergence_enabled: true
+  momentum_enabled: true
+  vwap_deviation: 2.0       # VWAP偏离阈值(%)
+  vwap_bounce_touches: 2    # VWAP支撑反弹触碰次数
+  surge_threshold: 2.0      # 急涨阈值(%)
+  drop_threshold: 1.5       # 急跌阈值(%)
+  volume_spike_mult: 3.0    # 放量倍数
+
+# T+0做T引擎
+intraday_t0_engine:
+  enabled: true
+  max_trades_per_day: 3     # 每日最多T+0笔数
+  max_loss_streak: 2        # 连续亏损后停止
+  max_position_pct: 0.30    # 单笔最大仓位(占底仓比例)
+  stop_loss_pct: 0.005      # 止损 0.5%
+  take_profit_min: 0.003    # 最小止盈 0.3%
+  min_profit_after_cost: 0.001
+  commission_rate: 0.0003
+  stamp_tax_rate: 0.001
+  vwap_sigma_entry: 1.5
+  vwap_sigma_exit: 0.3
+  opening_minutes: 30
+  volume_spike_mult: 3.0
+  min_amplitude_pct: 2.0    # 最小振幅(%),振幅太小不做T
+  exclude_first_30min: true
