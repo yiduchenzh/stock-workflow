@@ -7,7 +7,7 @@ STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "risk_state.json"
 
 def _load(): 
     try: return json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
-    except: return {}
+    except Exception: return {}
 def _save(s): 
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(s, indent=2))
@@ -33,7 +33,8 @@ def check_all(plans: list, positions: dict, cfg: dict) -> tuple:
     # VaR检查: 单笔风险不超过总资本3%
     capital = risk_cfg.get("capital", 1_000_000)
     for p in filtered:
-        risk_amount = p.get("entry_price", 0) * p.get("shares", 0) * 0.05
+        stop_loss_pct = abs(p.get("stop_loss", p.get("entry_price", 10) * 0.95) / p.get("entry_price", 10) - 1) if p.get("entry_price", 10) > 0 else 0.05
+        risk_amount = p.get("entry_price", 0) * p.get("shares", 0) * min(stop_loss_pct, 1.0)
         if risk_amount > capital * 0.03:
             alerts.append({"type": "var", "code": p.get("code"), "msg": f"单笔VaR超3%: {risk_amount/capital*100:.1f}%"})
     return filtered, alerts

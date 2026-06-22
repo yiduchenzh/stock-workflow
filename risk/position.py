@@ -23,14 +23,13 @@ def plan_positions(scores: list, capital: float, cfg: dict, bt_engine=None) -> l
         garch_adj = 1.2 if atr_pct < 1.5 else (1.0 if atr_pct < 3.0 else (0.8 if atr_pct < 5.0 else 0.6))
         kelly *= garch_adj
         kelly = min(kelly, 0.25)
-        price = s.get("entry_price", s.get("price", 10)) or 10
-        shares = max(100, int(capital * kelly / price / 100) * 100)
-        # 移动止盈默认值
-        sl = s.get("stop_loss", price * 0.95)
-        tp = price * (1 + rr * risk_cfg.get("risk_per_trade_pct", 1.0) / 100)
-        # 置信度调整: 多信号确认的给更高权重
+        # 置信度调整必须在shares之前!
         confidence = s.get("confidence", 0.5)
         kelly *= (0.5 + confidence * 0.5)
+        price = s.get("entry_price", s.get("price", 10)) or 10
+        shares = max(100, int(capital * kelly / price / 100) * 100)
+        sl = s.get("stop_loss", price * 0.95)
+        tp = price * (1 + rr * risk_cfg.get("risk_per_trade_pct", 1.0) / 100)
         plans.append({
             "code": s.get("code",""), "name": s.get("name",""),
             "strategy": strategy,

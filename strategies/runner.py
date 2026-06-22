@@ -9,7 +9,9 @@ def analyze_all(candidates: list, kline_override: dict = None) -> list:
     results = []
     for c in candidates[:15]:
         code = c.get("code", "")
-        kline = get_kline(code, 120)
+        kline = kline_override.get(code) if kline_override else None
+        if kline is None:
+            kline = get_kline(code, 120)
         if kline.empty or len(kline) < 30:
             results.append({"code": code, "name": c.get("name",""), "signal": False, "score": 0, "price": c.get("price",0)})
             continue
@@ -40,6 +42,7 @@ def analyze_all(candidates: list, kline_override: dict = None) -> list:
             "entry_price": best[2], "price": price,
             "stop_loss": price * 0.95, "take_profit": price * 1.10,
             "can_slim": c.get("can_slim", 50),
+            "kline_df": kline,
         })
     return results
 

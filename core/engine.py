@@ -12,6 +12,8 @@ logger = logging.getLogger("aurora")
 class AuroraEngine:
     def __init__(self, config_path: str = None):
         cfg_file = Path(config_path) if config_path else PROJ / "config.yaml"
+        if not cfg_file.exists():
+            cfg_file = PROJ / "config.example.yaml"
         self.cfg = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
         self.mode = self.cfg.get("system", {}).get("mode", "paper")
         self.capital = self.cfg.get("risk", {}).get("capital", 1_000_000)
@@ -62,7 +64,10 @@ class AuroraEngine:
         elif self.market_score >= 45: self.market_regime = "range"
         elif self.market_score >= 25: self.market_regime = "bear_weak"
         else: self.market_regime = "bear_strong"
-        self.log.info(f"[Step0] {self.market_regime} ({self.market_score:.0f}/100)")
+        from strategies.reflexivity import analyze_reflexivity
+        ref = analyze_reflexivity(self.market_score, self.market_regime)
+        self.reflexivity = ref
+        self.log.info(f"[Step0] {self.market_regime} ({self.market_score:.0f}/100) | {ref.get('stage','')[:40]}")
 
     def step_cascade(self):
         if self.market_score < 40:
@@ -93,7 +98,8 @@ class AuroraEngine:
         confirmed = []
         for a in self.analysis:
             if not a.get("signal"): continue
-            passed, conf, checks = confirm_entry(a)
+            kline_data = {"df": a.get("kline_df")} if a.get("kline_df") is not None else None
+            passed, conf, checks = confirm_entry(a, kline_data)
             a["confirmed"] = passed
             a["confidence"] = round(conf, 2)
             a["checks"] = checks
