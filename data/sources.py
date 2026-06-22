@@ -73,7 +73,7 @@ def get_market_breadth() -> dict:
         total = up + down
         ratio = up / total if total > 0 else 0.5
         return {"ad_score": int(min(max((ratio - 0.3) / 0.4 * 60, 0), 60)), "up_count": up, "down_count": down}
-    except:
+    except Exception:
         return {"ad_score": 0, "up_count": 0, "down_count": 0}
 
 def get_kline(code: str, days: int = 250) -> pd.DataFrame:

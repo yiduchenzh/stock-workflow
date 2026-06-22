@@ -26,12 +26,16 @@ def test_record_trade():
     assert len(alerts) > 0
 
 def test_plan_positions():
+    """Kelly公式仓位: weight基于胜率+盈亏比动态计算, 非固定值"""
     scores = [
-        {"code":"000001","signal":True,"best_score":80,"entry_price":10,"stop_loss":9.5},
-        {"code":"000002","signal":True,"best_score":65,"entry_price":20},
+        {"code":"000001","signal":True,"composite":80,"entry_price":10,"stop_loss":9.5,"best_score":80},
+        {"code":"000002","signal":True,"composite":65,"entry_price":20,"best_score":65},
         {"code":"000003","signal":False,"best_score":30},
     ]
-    plans = plan_positions(scores, 1000000, {"risk":{"position_weights":{"strong":0.30,"normal":0.20,"weak":0.10},"take_profit":{"rr_ratio":2.0},"risk_per_trade_pct":1.0}})
-    assert len(plans) == 2
-    assert plans[0]["weight"] == 0.30
-    assert plans[1]["weight"] == 0.20
+    cfg = {"risk":{"position_weights":{"strong":0.30,"normal":0.20,"weak":0.10},"take_profit":{"rr_ratio":2.0},"risk_per_trade_pct":1.0,"max_positions":5}}
+    plans = plan_positions(scores, 1000000, cfg)
+    assert len(plans) == 2  # Only 2 signals
+    assert plans[0]["weight"] > 0  # Kelly weight is positive
+    assert plans[1]["weight"] > 0
+    assert plans[0]["shares"] > 0
+    assert plans[1]["shares"] > 0
