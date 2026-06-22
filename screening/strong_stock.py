@@ -54,7 +54,7 @@ def screen_strong_stocks(candidates: list, northbound=None, kline_cache=None) ->
         if kline_cache:
             kline = kline_cache.get(c.get("code"))
             if kline is not None and len(kline) >= 20:
-                chg_history = np.diff(kline["close"].values[-60:]) / kline["close"].values[-61:-1] * 100
+                close_vals = kline["close"].values; chg_history = np.diff(close_vals[-61:]) / close_vals[-61:-1] * 100
                 limit_ups = sum(1 for ch in chg_history if ch >= 9.5)
                 if limit_ups >= 3: score += 10
                 elif limit_ups >= 1: score += 6
