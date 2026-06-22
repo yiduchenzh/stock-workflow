@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+data/risk_state.json
+data/sim_state.json
+data/sim_trades.json
+data/aurora.log
+config.yaml
+.vscode/
+*.egg-info/

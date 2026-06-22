@@ -1,0 +1,31 @@
+name: Aurora Auto Trade
+on:
+  schedule:
+    - cron: '15 1 * * 1-5'
+    - cron: '*/5 2-3 * * 1-5'
+    - cron: '0,5 5-6 * * 1-5'
+    - cron: '0 7 * * 1-5'
+  workflow_dispatch:
+env:
+  SCT_TOKEN: ${{ secrets.SCT_TOKEN }}
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install -q requests pyyaml pandas numpy
+      - name: Check trading day
+        id: td
+        run: python -c "from datetime import datetime; wd=datetime.now().weekday(); exit(0 if wd<5 else 1)" && echo "ok=1" >> $GITHUB_OUTPUT || echo "ok=0" >> $GITHUB_OUTPUT
+      - name: Run workflow
+        if: steps.td.outputs.ok == '1'
+        run: python daily_run.py
+      - name: Push notify
+        if: always() && env.SCT_TOKEN != ''
+        run: python -c "import requests,os; t=os.environ.get('SCT_TOKEN',''); requests.post(f'https://sctapi.ftqq.com/{t}.send',json={'title':'Aurora CI Done','desp':'OK'},timeout=10)" 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: data, path: data/, retention-days: 3, if-no-files-found: ignore}
