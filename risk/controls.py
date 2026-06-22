@@ -30,13 +30,25 @@ def check_all(plans: list, positions: dict, cfg: dict) -> tuple:
     filtered = plans[:max_pos]
     if len(plans) > max_pos:
         alerts.append({"type": "cap", "msg": f"仓位超限({len(plans)}→{max_pos})"})
-    # VaR检查: 单笔风险不超过总资本3%
+    # GARCH-VaR动态检查: 单笔风险不超过总资本3% (Tsay第6章)
     capital = risk_cfg.get("capital", 1_000_000)
     for p in filtered:
         stop_loss_pct = abs(p.get("stop_loss", p.get("entry_price", 10) * 0.95) / p.get("entry_price", 10) - 1) if p.get("entry_price", 10) > 0 else 0.05
         risk_amount = p.get("entry_price", 0) * p.get("shares", 0) * min(stop_loss_pct, 1.0)
-        if risk_amount > capital * 0.03:
-            alerts.append({"type": "var", "code": p.get("code"), "msg": f"单笔VaR超3%: {risk_amount/capital*100:.1f}%"})
+        # GARCH-VaR: 如果可用，用动态VaR替代
+        from risk.garch_var import predict_var_garch
+        kline_df = p.get("kline_df")
+        if kline_df is not None and len(kline_df) >= 30:
+            close = kline_df["close"].values
+            returns = np.diff(np.log(close))
+            garch_var = predict_var_garch(returns)
+            daily_loss_limit = max(capital * garch_var, capital * 0.01)
+        else:
+            daily_loss_limit = capital * 0.03
+        if risk_amount > daily_loss_limit:
+            alerts.append({"type": "var", "code": p.get("code"), 
+                          "msg": f"GARCH-VaR超限: {risk_amount/capital*100:.1f}%>" + 
+                                 f"{daily_loss_limit/capital*100:.1f}%"})
     return filtered, alerts
 
 def record_trade(pnl_pct: float):
