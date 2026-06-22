@@ -168,21 +168,28 @@ class AuroraEngine:
         self.log.info("[Step9.5] Watchlist generated")
 
     def _push_summary(self):
+        # Only push when there is real content (trades or alerts)
+        if not self.plans and not self.alerts and self.market_score < 60:
+            return
         token = self.cfg.get("notify", {}).get("sct_token", "")
         if not token: return
         try:
             import requests
             token = _os.environ.get("SCT_TOKEN", token)
-            if not token: return
+            if not token or len(token) < 10: return
             from strategies.evolution import get_all_health
             health = get_all_health()
-            health_str = "\n".join(f"  {n}: {h['status']} wr={h.get('win_rate','?')}" for n,h in list(health.items())[:5])
+            health_str = "\n".join(f"  {n}: {h["status"]} wr={h.get("win_rate","?")}" for n,h in list(health.items())[:5] if h.get("trades",0) > 0)
+            if not health_str:
+                health_str = "  (no trade data)"
+            desc = f"Score:{self.market_score:.0f}"
+            if self.plans: desc += f"\nPlans:{len(self.plans)}"
+            if self.alerts: desc += f"\nAlerts:{len(self.alerts)}"
+            desc += f"\n\nStrategies:\n{health_str}"
             requests.post(f"https://sctapi.ftqq.com/{token}.send",
                 json={"title": f"Aurora {self.market_regime} {datetime.now():%m-%d %H:%M}",
-                      "desp": f"Score:{self.market_score:.0f}\nPlans:{len(self.plans)}\nAlerts:{len(self.alerts)}\n\nStrategies:\n{health_str}"},
-                timeout=10)
+                      "desp": desc}, timeout=10)
         except Exception: pass
-
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     AuroraEngine().run()
