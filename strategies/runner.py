@@ -4,7 +4,7 @@ import logging, numpy as np
 import pandas as pd
 logger = logging.getLogger("aurora.strategies")
 
-def analyze_all(candidates: list) -> list:
+def analyze_all(candidates: list, kline_override: dict = None) -> list:
     from data.sources import get_kline
     results = []
     for c in candidates[:15]:

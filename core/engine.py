@@ -1,5 +1,5 @@
 
-"""Aurora Trading Engine v2.0 — 十三步闭环 · 9书框架全映射"""
+"""Aurora Trading Engine v3.0 — 90分目标 · 回测驱动+多信号+自适应+自进化"""
 from __future__ import annotations
 import logging, sys, time, yaml, os as _os
 from pathlib import Path
@@ -10,14 +10,12 @@ PROJ = Path(__file__).resolve().parent.parent
 logger = logging.getLogger("aurora")
 
 class AuroraEngine:
-    """全自动交易引擎 — 9书框架驱动的十三步闭环"""
     def __init__(self, config_path: str = None):
         cfg_file = Path(config_path) if config_path else PROJ / "config.yaml"
         self.cfg = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
         self.mode = self.cfg.get("system", {}).get("mode", "paper")
         self.capital = self.cfg.get("risk", {}).get("capital", 1_000_000)
-        self.market_score = 50
-        self.market_regime = "range"
+        self.market_score = 50; self.market_regime = "range"
         self.positions = {}; self.plans = []; self.alerts = []; self.log = logger
 
     def run(self):
@@ -25,138 +23,110 @@ class AuroraEngine:
             self.log.info("非交易日,跳过"); return
         t0 = time.time()
         steps = [
-            ("step_market", "市场体检(6维度·索罗斯+彼得斯)"),
-            ("step_cascade", "三级联动(大盘→板块→个股·Murphy)"),
-            ("step_screen", "选股(CAN SLIM+格雷厄姆量化)"),
-            ("step_analyze", "战法分析(5战法+波浪+123/2B)"),
-            ("step_score", "综合评分(缠论+MTF+指标·8维度)"),
-            ("step_position", "仓位计划(Kelly+GARCH波动率)"),
-            ("step_risk", "风控审核(VaR+压力测试+熔断)"),
-            ("step_simulate", "模拟交易(含费用均价)"),
-            ("step_t0", "日内T+0(5策略并行·VWAP回归)"),
-            ("step_monitor", "实时监控(止损+移动止盈+背离)"),
-            ("step_evaluate", "策略评估(夏普+最大回撤+胜率)"),
-            ("step_review", "复盘(行为偏误诊断+对抗复盘)"),
-            ("step_prep", "次日准备(A/B/C观察池)"),
+            ("step_market", "市场体检(6维度)"),
+            ("step_cascade", "三级联动(大盘→板块→个股)"),
+            ("step_screen", "CAN SLIM选股"),
+            ("step_analyze", "7战法(多信号确认+量价验证)"),
+            ("step_score", "综合评分(动态Kelly+regime)"),
+            ("step_position", "仓位计划(真实Kelly+自适应)"),
+            ("step_risk", "风控(VaR+压力测试)"),
+            ("step_simulate", "模拟交易(含移动止盈)"),
+            ("step_monitor", "实时监控"),
+            ("step_evaluate", "策略评估(自进化统计)"),
+            ("step_review", "复盘(行为偏误)"),
+            ("step_prep", "次日准备"),
         ]
         for step_name, label in steps:
             try:
                 fn = getattr(self, step_name, None)
                 if fn: fn()
-                self.log.info(f"  {label} ✓")
+                self.log.info(f"  {label} OK")
             except Exception as e:
-                self.log.error(f"  {label} ✗ {e}")
-        self.log.info(f"全流程完成 — {time.time()-t0:.1f}s")
+                self.log.error(f"  {label} FAIL: {e}")
+        self.log.info(f"Done — {time.time()-t0:.1f}s")
         self._push_summary()
 
-    # ═══════════════════════════════════════════
-    # Step 0: 市场体检 (6维度·索罗斯反身性+彼得斯分形)
-    # ═══════════════════════════════════════════
     def step_market(self):
         from data.sources import get_index_snapshot, get_market_breadth, get_sector_ranking
-        # 维度1: 指数趋势 (40%) — 三大指数 MA排列 + MACD方向
         idx = get_index_snapshot(["000001","399001","399006"])
-        idx_score = 30
-        if idx:
-            up_count = sum(1 for v in idx.values() if v.get("change_pct", 0) > 0)
-            idx_score = 30 + up_count * 20
-        # 维度2: 市场广度 (25%) — 涨跌比 AD Line
+        idx_score = 30 + sum(1 for v in (idx or {}).values() if v.get("change_pct", 0) > 0) * 20 if idx else 50
         breadth = get_market_breadth()
-        ad_score = breadth.get("ad_score", 0)
-        # 维度3: 板块热度 (15%) — 上涨行业占比
-        sectors = get_sector_ranking(100)
-        sec_up = sum(1 for s in sectors if s.get("change_pct", 0) > 0) if sectors else 50
-        sec_score = int(min(sec_up / max(len(sectors), 1) * 100, 100)) if sectors else 50
-        # 维度4: 波动率 (10%) — ATR% 分类
-        vol_score = 50
-        # 维度5: 新高新低 (5%) — 简化为涨>5% vs 跌<-5%
-        nh_score = 50
-        # 维度6: 涨停跌停比 (5%)
-        lb_score = 50
-        # 综合
-        total = idx_score * 0.40 + ad_score * 0.25 + sec_score * 0.15 + vol_score * 0.10 + nh_score * 0.05 + lb_score * 0.05
+        ad_score = breadth.get("ad_score", 0) if breadth else 0
+        sectors = get_sector_ranking(100) or []
+        sec_up = sum(1 for s in sectors if s.get("change_pct", 0) > 0)
+        sec_score = int(min(sec_up / max(len(sectors), 1) * 100, 100))
+        total = idx_score * 0.40 + ad_score * 0.25 + sec_score * 0.15 + 50 * 0.20
         self.market_score = min(100, total)
-        # 市场状态分类
         if self.market_score >= 75: self.market_regime = "bull_strong"
         elif self.market_score >= 55: self.market_regime = "bull_weak"
         elif self.market_score >= 45: self.market_regime = "range"
         elif self.market_score >= 25: self.market_regime = "bear_weak"
         else: self.market_regime = "bear_strong"
-        self.log.info(f"[Step0] 市场: {self.market_regime} ({self.market_score:.0f}/100)")
+        self.log.info(f"[Step0] {self.market_regime} ({self.market_score:.0f}/100)")
 
-    # ═══════════════════════════════════════════
-    # Step 0.5: 三级联动 (大盘→板块→个股·Murphy)
-    # ═══════════════════════════════════════════
     def step_cascade(self):
         if self.market_score < 40:
-            self.log.warning("[Cascade] 市场空头,跳过选股")
-            self.candidates = []
-            return
+            self.candidates = []; return
         from screening.cascade import cascade_screen
         self.candidates = cascade_screen(self.cfg)
-        # 按板块热度排序
         from data.sources import get_sector_ranking
-        sectors = {s["name"]: s["change_pct"] for s in get_sector_ranking(50)}
+        sectors = {s["name"]: s["change_pct"] for s in (get_sector_ranking(50) or [])}
         for c in self.candidates:
-            ind = c.get("industry", "")
-            c["sector_heat"] = sectors.get(ind, 0)
+            c["sector_heat"] = sectors.get(c.get("industry", ""), 0)
         self.candidates.sort(key=lambda x: x.get("sector_heat", 0), reverse=True)
-        self.log.info(f"[Cascade] 候选: {len(self.candidates)}只 (板块筛选)")
+        self.log.info(f"[Cascade] {len(self.candidates)} candidates")
 
-    # ═══════════════════════════════════════════
-    # Step 1: 选股 (CAN SLIM + 格雷厄姆量化)
-    # ═══════════════════════════════════════════
     def step_screen(self):
-        if not self.candidates:
-            self.log.warning("[Step1] 无候选"); return
+        if not self.candidates: return
         from screening.canslim import can_slim_filter
         self.screened = can_slim_filter(self.candidates, self.market_regime)
-        self.log.info(f"[Step1] CAN SLIM筛选: {len(self.screened)}只通过")
+        self.log.info(f"[Step1] CAN SLIM: {len(self.screened)} passed")
 
-    # ═══════════════════════════════════════════
-    # Step 2: 战法分析 (5战法+波浪+123/2B·斯波朗迪)
-    # ═══════════════════════════════════════════
     def step_analyze(self):
-        candidates = getattr(self, "screened", None) or getattr(self, "candidates", [])
-        if not candidates:
-            self.analysis = []; return
+        candidates = getattr(self, "screened", None) or self.candidates or []
+        if not candidates: self.analysis = []; return
         from strategies.runner import analyze_all
+        from strategies.regime import filter_strategies_by_regime
+        from strategies.confirmation import confirm_entry
         self.analysis = analyze_all(candidates)
-        signals = sum(1 for a in self.analysis if a.get("signal"))
-        self.log.info(f"[Step2] 战法信号: {signals}/{len(self.analysis)}个")
+        # 多信号确认过滤
+        confirmed = []
+        for a in self.analysis:
+            if not a.get("signal"): continue
+            passed, conf, checks = confirm_entry(a)
+            a["confirmed"] = passed
+            a["confidence"] = round(conf, 2)
+            a["checks"] = checks
+            if passed: confirmed.append(a)
+            else:
+                from strategies.evolution import record_signal
+                record_signal(a.get("best_strategy","?"), a.get("best_score",0))
+        # 按市场状态过滤策略
+        active_strats = filter_strategies_by_regime(self.market_regime,
+            [a.get("best_strategy","") for a in confirmed])
+        self.analysis = [a for a in confirmed if a.get("best_strategy","") in active_strats]
+        self.log.info(f"[Step2] {len(confirmed)} signals→{len(self.analysis)} confirmed (regime:{self.market_regime})")
 
-    # ═══════════════════════════════════════════
-    # Step 3: 综合评分 (缠论+MTF+指标·8维度)
-    # ═══════════════════════════════════════════
     def step_score(self):
-        if not getattr(self, "analysis", None):
-            self.scores = []; return
+        if not getattr(self, "analysis", None): self.scores = []; return
         from strategies.scoring import composite_score
         self.scores = composite_score(self.analysis, self.market_regime, self.market_score)
-        self.log.info(f"[Step3] 综合评分: {len(self.scores)}只")
+        self.log.info(f"[Step3] {len(self.scores)} scored")
 
-    # ═══════════════════════════════════════════
-    # Step 4: 仓位计划 (Kelly公式+GARCH波动率)
-    # ═══════════════════════════════════════════
     def step_position(self):
-        if not getattr(self, "scores", None):
-            self.plans = []; return
+        if not getattr(self, "scores", None): self.plans = []; return
         from risk.position import plan_positions
-        self.plans = plan_positions(self.scores, self.capital, self.cfg)
-        self.log.info(f"[Step4] 仓位计划: {len(self.plans)}笔 (Kelly+GARCH)")
+        from backtest.engine import get_backtest_engine
+        bt = get_backtest_engine()
+        self.plans = plan_positions(self.scores, self.capital, self.cfg, bt)
+        self.log.info(f"[Step4] {len(self.plans)} plans (Kelly adapted)")
 
-    # ═══════════════════════════════════════════
-    # Step 5: 风控 (VaR+压力测试+熔断)
-    # ═══════════════════════════════════════════
     def step_risk(self):
         if not self.plans: return
         from risk.controls import check_all
         self.plans, self.alerts = check_all(self.plans, self.positions, self.cfg)
-        self.log.info(f"[Step5] 通过: {len(self.plans)}笔, 告警: {len(self.alerts)}")
+        self.log.info(f"[Step5] {len(self.plans)} passed, {len(self.alerts)} alerts")
 
-    # ═══════════════════════════════════════════
-    # Step 6-9: 模拟+监控+评估+复盘
-    # ═══════════════════════════════════════════
     def step_simulate(self):
         if not self.plans: return
         from monitor.simulator import SimAccount
@@ -164,38 +134,46 @@ class AuroraEngine:
         for p in self.plans:
             acc.buy(p["code"], p["entry_price"], p["shares"], p.get("strategy", ""))
         self.account = acc
-        self.log.info(f"[Step6] 开仓: {len(self.plans)}笔")
-
-    def step_t0(self):
-        if not self.plans: return
-        self.log.info("[Step6.5] T+0引擎待机 (需盘中实时数据)")
+        # 记录交易到自进化引擎
+        from strategies.evolution import record_trade_result
+        for p in self.plans:
+            record_trade_result(p.get("strategy","?"), 0, True)  # 开仓记录
+        self.log.info(f"[Step6] {len(self.plans)} opened")
 
     def step_monitor(self):
         from monitor.watcher import watch_positions
         alerts = watch_positions(self.positions, self.cfg)
         self.alerts.extend(alerts)
-        self.log.info(f"[Step7] 监控: {len(alerts)}条告警")
 
     def step_evaluate(self):
-        self.log.info("[Step8] 策略评估: 夏普/回撤/胜率 (需回测引擎)")
+        from backtest.engine import get_backtest_engine
+        bt = get_backtest_engine()
+        self.log.info(f"[Step8]\n{bt.summary()}")
+        from strategies.evolution import get_all_health
+        health = get_all_health()
+        dead = [n for n, h in health.items() if h.get("status") == "dead"]
+        if dead:
+            self.log.warning(f"[Evolve] Dead strategies: {dead}")
 
     def step_review(self):
-        self.log.info(f"[Step9] 复盘: {len(self.plans)}笔交易, {len(self.alerts)}条告警")
+        self.log.info(f"[Step9] {len(self.plans)} trades, {len(self.alerts)} alerts")
 
     def step_prep(self):
-        self.log.info("[Step9.5] 次日观察池生成")
+        self.log.info("[Step9.5] Watchlist generated")
 
     def _push_summary(self):
         token = self.cfg.get("notify", {}).get("sct_token", "")
         if not token: return
         try:
             import requests
-            env_token = _os.environ.get("SCT_TOKEN", "")
-            token = env_token or token
+            token = _os.environ.get("SCT_TOKEN", token)
             if not token: return
+            from strategies.evolution import get_all_health
+            health = get_all_health()
+            health_str = "\n".join(f"  {n}: {h['status']} wr={h.get('win_rate','?')}" for n,h in list(health.items())[:5])
             requests.post(f"https://sctapi.ftqq.com/{token}.send",
                 json={"title": f"Aurora {self.market_regime} {datetime.now():%m-%d %H:%M}",
-                      "desp": f"评分:{self.market_score:.0f}\n计划:{len(self.plans)}笔\n告警:{len(self.alerts)}"},
+                      "desp": f"Score:{self.market_score:.0f}\nPlans:{len(self.plans)}\nAlerts:{len(self.alerts)}\n\nStrategies:\n{health_str}"},
                 timeout=10)
         except Exception: pass
 
