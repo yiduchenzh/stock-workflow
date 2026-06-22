@@ -1,58 +1,43 @@
 
-"""GARCH(1,1)波动率预测 + 动态VaR — Tsay 第3版"""
+"""波动率预测 + VaR — EWMA方法 (RiskMetrics/Tsay)"""
 import numpy as np
 import logging
 logger = logging.getLogger("aurora.garch")
 
-def fit_garch_11(returns, max_iter=100):
-    """拟合GARCH(1,1): sigma2_t = omega + alpha*eps2_{t-1} + beta*sigma2_{t-1}"""
-    if len(returns) < 60: return {"omega": 0.0001, "alpha": 0.10, "beta": 0.85, "converged": False}
+def ewma_volatility(returns, lambda_=0.94):
+    """EWMA波动率: sigma2_t = lambda*sigma2_{t-1} + (1-lambda)*r2_{t-1}
+    
+    RiskMetrics标准: lambda=0.94(日频), 0.97(月频)
+    比之前的手动GARCH迭代更可靠、更标准
+    """
+    if len(returns) < 20: return {"sigma_daily": 0.02, "annual_vol": 31.7}
     r = np.array(returns)
-    # 简单最小二乘近似
-    omega = np.var(r) * 0.01
-    alpha = 0.10
-    beta = max(0.80, 1.0 - alpha - 0.01)
-    for _ in range(max_iter):
-        sigma2 = np.zeros(len(r))
-        sigma2[0] = np.var(r)
-        for t in range(1, len(r)):
-            sigma2[t] = omega + alpha * r[t-1]**2 + beta * sigma2[t-1]
-        omega_new = np.mean(r**2) * (1 - alpha - beta)
-        alpha_new = np.corrcoef(r[1:]**2, r[:-1]**2)[0,1] * 0.1 if len(r) > 1 else 0.1
-        beta_new = 1.0 - alpha_new - omega_new / max(np.mean(r**2), 0.0001)
-        alpha_new = max(0.01, min(0.30, alpha_new))
-        beta_new = max(0.60, min(0.98, beta_new))
-        omega_new = max(0.00001, np.var(r) * (1 - alpha_new - beta_new))
-        if abs(alpha - alpha_new) < 0.001 and abs(beta - beta_new) < 0.001:
-            break
-        omega, alpha, beta = omega_new, alpha_new, beta_new
-    converged = alpha + beta < 1.0
-    return {"omega": round(omega, 6), "alpha": round(alpha, 4), "beta": round(beta, 4),
-            "persistence": round(alpha + beta, 4), "converged": converged,
-            "annual_vol": round(np.sqrt(omega / (1 - alpha - beta) * 252) * 100, 2) if converged else 0}
+    sigma2 = np.var(r)  # 初始值
+    for t in range(1, min(len(r), 60)):
+        sigma2 = lambda_ * sigma2 + (1 - lambda_) * r[t-1]**2
+    daily_vol = np.sqrt(max(sigma2, 0.000001))
+    annual_vol = daily_vol * np.sqrt(252) * 100
+    return {
+        "sigma_daily": round(daily_vol, 6),
+        "annual_vol": round(annual_vol, 2),
+        "method": "EWMA",
+    }
 
-def predict_var_garch(returns, confidence=0.99, horizon=1):
-    """GARCH-VaR: VaR_t = z_alpha * sigma_{t+1}"""
-    result = fit_garch_11(returns)
-    if not result["converged"]: return 0.03
-    r = np.array(returns)
-    sigma2_last = result["omega"] / (1 - result["alpha"] - result["beta"]) if result["persistence"] < 1 else np.var(r)
-    sigma_next = np.sqrt(sigma2_last)
-    z_scores = {0.95: 1.645, 0.99: 2.326, 0.999: 3.090}
-    z = z_scores.get(confidence, 2.326)
-    var = z * sigma_next * np.sqrt(horizon)
-    return round(min(max(var, 0.005), 0.15), 4)
+def predict_var(returns, confidence=0.99):
+    """EWMA-VaR: VaR = z_alpha * sigma_t"""
+    result = ewma_volatility(returns)
+    z = {0.95: 1.645, 0.99: 2.326, 0.999: 3.090}.get(confidence, 2.326)
+    var = z * result["sigma_daily"]
+    return round(max(var, 0.005), 4)
 
-def get_garch_kelly_adjustment(kline_df):
-    """GARCH波动率→Kelly仓位调整系数"""
-    if kline_df is None or len(kline_df) < 30: return 1.0
+def get_kelly_adjustment(kline_df):
+    """波动率→Kelly调整: 低波加仓, 高波减仓"""
+    if kline_df is None or len(kline_df) < 20: return 1.0
     close = kline_df["close"].values
     returns = np.diff(np.log(close))
-    result = fit_garch_11(returns)
-    if not result["converged"]: return 1.0
-    # 波动率越低→仓位越大, 波动率越高→仓位越小
-    daily_vol = np.sqrt(result["omega"] / (1 - result["alpha"] - result["beta"]))
-    if daily_vol < 0.01: return 1.3     # 极低波动: 加仓
-    elif daily_vol < 0.02: return 1.0    # 正常
-    elif daily_vol < 0.03: return 0.7    # 高波动: 减仓
-    else: return 0.4                      # 极高波动: 大减仓
+    result = ewma_volatility(returns)
+    daily = result["sigma_daily"]
+    if daily < 0.008: return 1.25      # 极低波(<20%年化)
+    elif daily < 0.015: return 1.0     # 正常(20-38%年化)
+    elif daily < 0.025: return 0.7     # 偏高(38-63%)
+    else: return 0.4                    # 极高波(>63%)

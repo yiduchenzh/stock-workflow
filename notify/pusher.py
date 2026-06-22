@@ -65,4 +65,4 @@ def _send(title, desc, engine):
         requests.post(f"https://sctapi.ftqq.com/{token}.send",
             json={"title": title, "desp": desc}, timeout=10)
         logger.info(f"[Push] {title[:30]}...")
-    except: pass
+    except Exception: pass

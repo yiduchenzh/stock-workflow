@@ -17,7 +17,12 @@ class SimAccount(BaseExecutor):
         self.config = config or {}
         self.commission = 0.0003      # 佣金0.03%
         self.stamp_tax = 0.001        # 印花税0.1% (仅卖出)
-        self.slippage = 0.001         # 基础滑点0.1%
+        self.slippage_base = 0.001     # 基础滑点0.1%
+        self.slippage_tiers = {      # 按市值分层 (Quant审计)
+            500: 0.001,   # >500亿: 0.1%
+            100: 0.002,   # 100-500亿: 0.2%
+            0:   0.003,   # <100亿: 0.3%
+        }
         self.impact_factor = 0.0001   # 冲击成本(每100万成交额+0.01%)
         self._load()
     
@@ -27,7 +32,11 @@ class SimAccount(BaseExecutor):
         shares = int(shares / 100) * 100
         
         # 滑点模拟: 买入价上浮(买方主动)
-        slippage = self.slippage + random.uniform(0, 0.001)  # 0.1-0.2%
+        mcap = getattr(self, 'stock_mcap', 200)  # 市值(亿), 默认200
+        base_slip = 0.003
+        for threshold, slip in sorted(self.slippage_tiers.items(), reverse=True):
+            if mcap >= threshold: base_slip = slip; break
+        slippage = base_slip + random.uniform(0, 0.001)
         fill_price = price * (1 + slippage)
         
         # 冲击成本: 成交额越大滑点越大
@@ -82,7 +91,7 @@ class SimAccount(BaseExecutor):
         shares = int(shares / 100) * 100
         
         # 滑点: 卖出价下浮
-        slippage = self.slippage + random.uniform(0, 0.001)
+        slippage = self.slippage_base + random.uniform(0, 0.001)
         fill_price = price * (1 - slippage)
         
         notional = fill_price * shares

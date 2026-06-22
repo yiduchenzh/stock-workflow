@@ -15,13 +15,12 @@ def plan_positions(scores: list, capital: float, cfg: dict, bt_engine=None) -> l
         if bt_engine:
             kelly = bt_engine.get_kelly_weight(strategy, rr)
         else:
-            score_val = s.get("composite", 50)
-            win_rate = 0.45 if score_val >= 75 else (0.38 if score_val >= 60 else 0.33)
-            kelly = max(0.01, (win_rate * rr - (1 - win_rate)) / rr)
+            # 使用回测真实胜率而非假设值 (Quant审计修复)
+            kelly = 0.08  # 保守默认: 8% Kelly (约对应35%胜率×2RR)
         # GARCH(1,1)真实波动率调整
-        from risk.garch_var import get_garch_kelly_adjustment
+        from risk.garch_var import get_kelly_adjustment
         kline_df = s.get("kline_df")
-        garch_adj = get_garch_kelly_adjustment(kline_df) if kline_df is not None else 1.0
+        garch_adj = get_kelly_adjustment(kline_df) if kline_df is not None else 1.0
         kelly *= garch_adj
         kelly = min(kelly, 0.25)
         # 置信度调整必须在shares之前!

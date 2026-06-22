@@ -36,12 +36,12 @@ def check_all(plans: list, positions: dict, cfg: dict) -> tuple:
         stop_loss_pct = abs(p.get("stop_loss", p.get("entry_price", 10) * 0.95) / p.get("entry_price", 10) - 1) if p.get("entry_price", 10) > 0 else 0.05
         risk_amount = p.get("entry_price", 0) * p.get("shares", 0) * min(stop_loss_pct, 1.0)
         # GARCH-VaR: 如果可用，用动态VaR替代
-        from risk.garch_var import predict_var_garch
+        from risk.garch_var import predict_var
         kline_df = p.get("kline_df")
         if kline_df is not None and len(kline_df) >= 30:
             close = kline_df["close"].values
             returns = np.diff(np.log(close))
-            garch_var = predict_var_garch(returns)
+            garch_var = predict_var(returns)
             daily_loss_limit = max(capital * garch_var, capital * 0.01)
         else:
             daily_loss_limit = capital * 0.03
@@ -58,6 +58,14 @@ def check_all(plans: list, positions: dict, cfg: dict) -> tuple:
         if count > 3:
             alerts.append({"type": "concentration", "industry": ind,
                           "msg": f"行业集中度: {ind}持仓{count}只(上限3)"})
+    # 日亏损限额检查 (Quant审计修复: 之前定义了但从未执行)
+    daily_limit = risk_cfg.get("daily_loss_limit_pct", -3.0) / 100
+    if state.get("daily_pnl", 0) < daily_limit * capital:
+        alerts.append({"type": "daily_loss", 
+                      "msg": f"日亏损{state['daily_pnl']/capital*100:.1f}%超过上限{daily_limit*100:.0f}%, 触发熔断"})
+        state["breaker"] = True
+        _save(state)
+        return [], alerts
     return filtered, alerts
 
 def record_trade(pnl_pct: float):
