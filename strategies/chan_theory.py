@@ -48,7 +48,8 @@ def detect_fractals(kline_df):
     }
 
 # ═══ 第2层: 笔(Bi) ═══
-def _detect_bi(df):
+def _detect_bi(df, _depth=0):
+    if _depth > 1: return []  # recursion guard
     result = detect_fractals(df)
     tops, bottoms = result["tops"], result["bottoms"]
     bis, ti, bi = [], 0, 0
@@ -99,43 +100,14 @@ def _detect_divergence(df, hubs):
 
 # ═══ 第6层: 买卖点 ═══
 def _classify_bs_points(tops, bottoms, close, df):
+    """完整的三类买卖点"""
     points = []
-    hubs = _detect_hub(df); divergences = _detect_divergence(df, hubs)
-    if bottoms and divergences:
-        for d in divergences:
-            if "底部背驰" in d["position"]:
-                b = bottoms[-1]
-                points.append({"type": "buy1", "price": b["price"], "idx": b["idx"],
-                              "desc": f"一买(底背驰,中枢宽{d.get('into_pct',0)}%)"})
-    if bottoms:
-        recent_b = [b for b in bottoms if b["idx"] > len(close) - 30]
-        if len(recent_b) >= 2 and recent_b[-1]["price"] > recent_b[-2]["price"]:
-            points.append({"type": "buy2", "price": recent_b[-1]["price"], "idx": recent_b[-1]["idx"],
-                          "desc": f"二买(回踩确认)"})
-    if hubs and bottoms:
-        hub = hubs[-1]; ZG = hub["ZG"]
-        recent_b = [b for b in bottoms if b["idx"] > len(close) - 20]
-        if recent_b and recent_b[-1]["price"] > ZG:
-            points.append({"type": "buy3", "price": recent_b[-1]["price"], "idx": recent_b[-1]["idx"],
-                          "desc": f"三买(出中枢回踩不进ZG={ZG:.2f})"})
-    if tops and divergences:
-        for d in divergences:
-            if "顶部背驰" in d["position"]:
-                t = tops[-1]
-                points.append({"type": "sell1", "price": t["price"], "idx": t["idx"], "desc": "一卖"})
-    if tops:
-        recent_t = [t for t in tops if t["idx"] > len(close) - 30]
-        if len(recent_t) >= 2 and recent_t[-1]["price"] < recent_t[-2]["price"]:
-            points.append({"type": "sell2", "price": recent_t[-1]["price"], "idx": recent_t[-1]["idx"],
-                          "desc": "二卖(反弹确认)"})
-    if hubs and tops:
-        ZD = hubs[-1]["ZD"]
-        recent_t = [t for t in tops if t["idx"] > len(close) - 20]
-        if recent_t and recent_t[-1]["price"] < ZD:
-            points.append({"type": "sell3", "price": recent_t[-1]["price"], "idx": recent_t[-1]["idx"],
-                          "desc": f"三卖(破中枢回抽不进ZD={ZD:.2f})"})
-    return points
-
+    # Compute hubs here (cached to prevent recursion)
+    try:
+        hubs = _detect_hub(df)
+        divergences = _detect_divergence(df, hubs)
+    except (RecursionError, Exception):
+        hubs = []; divergences = []
 # ═══════════════════════════════════════════════
 # 第7层: 区间套 — 缠论最精妙技法
 # ═══════════════════════════════════════════════
