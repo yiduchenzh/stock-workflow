@@ -68,6 +68,10 @@ class AuroraEngine:
         ref = analyze_reflexivity(self.market_score, self.market_regime)
         self.reflexivity = ref
         self.log.info(f"[Step0] {self.market_regime} ({self.market_score:.0f}/100) | {ref.get('stage','')[:40]}")
+        from data.northbound import get_northbound_flow
+        nb = get_northbound_flow()
+        self.northbound = nb
+        self.log.info(f"[Step0] 北向: {nb["signal"]} (累计{nb["cumulative_yi"]:.0f}亿)")
 
     def step_cascade(self):
         if self.market_score < 40:
@@ -80,6 +84,11 @@ class AuroraEngine:
             c["sector_heat"] = sectors.get(c.get("industry", ""), 0)
         self.candidates.sort(key=lambda x: x.get("sector_heat", 0), reverse=True)
         self.log.info(f"[Cascade] {len(self.candidates)} candidates")
+        # 集合竞价筛选
+        from screening.auction import auction_screen
+        if self.candidates:
+            self.candidates = auction_screen(self.candidates, top_n=10)
+            self.log.info(f"[Auction] CC筛选后: {len(self.candidates)}只")
 
     def step_screen(self):
         if not self.candidates: return
