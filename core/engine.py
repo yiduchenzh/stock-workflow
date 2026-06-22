@@ -84,6 +84,12 @@ class AuroraEngine:
             c["sector_heat"] = sectors.get(c.get("industry", ""), 0)
         self.candidates.sort(key=lambda x: x.get("sector_heat", 0), reverse=True)
         self.log.info(f"[Cascade] {len(self.candidates)} candidates")
+        # 强势股筛选: 板块轮动+资金流向+RS排名+涨停基因
+        if self.candidates:
+            from screening.strong_stock import screen_strong_stocks
+            self.candidates = screen_strong_stocks(self.candidates, 
+                getattr(self, "northbound", None))
+            self.log.info(f"[Strong] 强势股: {len(self.candidates)}只 (板块+RS+资金+基因)")
         # 集合竞价筛选
         from screening.auction import auction_screen
         if self.candidates:
@@ -177,6 +183,19 @@ class AuroraEngine:
         from monitor.watcher import watch_positions
         alerts = watch_positions(self.positions, self.cfg)
         self.alerts.extend(alerts)
+        # 盘中突发检查
+        from monitor.contingency import check_contingency
+        market_status = {"index_change": 0}  # 简化: 日线级别无法获取盘中大盘涨跌
+        kline_cache = {}
+        for code in self.positions:
+            from data.sources import get_kline
+            df = get_kline(code, 30)
+            if not df.empty: kline_cache[code] = df
+        contingency_alerts = check_contingency(self.positions, market_status, kline_cache)
+        if contingency_alerts:
+            self.alerts.extend(contingency_alerts)
+            for ca in contingency_alerts:
+                self.log.warning(f"  [ALERT] {ca['type']}: {ca['code']} {ca['reason']}")
 
     def step_evaluate(self):
         from backtest.engine import get_backtest_engine

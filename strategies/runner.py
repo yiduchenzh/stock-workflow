@@ -37,15 +37,25 @@ def analyze_all(candidates: list, kline_override: dict = None) -> list:
         # MA突破 (降级)
         ma = _check_ma_breakout(kline)
         if ma > 0: signals.append(("ma_breakout", ma, price))
-        best = max(signals, key=lambda x: x[1]) if signals else (None, 0, price)
+        # 多战法投票: >=2个战法看好→确认, 综合加权而非单一max
+        if len(signals) >= 2:
+            weighted_score = sum(s[1] for s in signals) / len(signals) + 10  # 多战法加成
+            best_strat = max(signals, key=lambda x: x[1])[0]
+        elif signals:
+            best_strat = signals[0][0]
+            weighted_score = signals[0][1]
+        else:
+            best_strat = None; weighted_score = 0
         results.append({
             "code": code, "name": c.get("name",""),
             "signal": bool(signals),
-            "best_strategy": best[0], "best_score": best[1],
-            "entry_price": best[2], "price": price,
+            "best_strategy": best_strat, "best_score": weighted_score,
+            "entry_price": price, "price": price,
             "stop_loss": price * 0.95, "take_profit": price * 1.10,
             "can_slim": c.get("can_slim", 50),
             "kline_df": kline,
+            "signal_count": len(signals),
+            "all_signals": [s[0] for s in signals],
         })
     return results
 
