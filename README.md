@@ -1,6 +1,6 @@
 # 🚀 Aurora Trading — A股全自动量化交易系统
 
-> **十三步闭环 · 9书框架全映射 · 回测驱动 · 自进化 · 95分代码质量**
+> **十三步闭环 · 经典框架全映射 · 回测驱动 · 自进化 · 95分代码质量**
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue)](https://python.org)
 [![Tests](https://img.shields.io/badge/tests-12%20passed-brightgreen)](tests/)
@@ -176,8 +176,8 @@ MVP  v2.0  v3.0  修复  P0修复 重写  重塑  缠论  指标  终版
 | 平台 | 账号/地址 |
 |------|---------|
 | GitHub | [yiduchenzh](https://github.com/yiduchenzh) |
-| 雪球 | (https://xueqiu.com/u/1079180510) |
-| 知乎 | (https://www.zhihu.com/people/zhi-hu-yong-hu-28453) |
+| 雪球 | https://xueqiu.com/u/1079180510 |
+| 知乎 | https://www.zhihu.com/people/zhi-hu-yong-hu-28453 |
 | 知识星球 | https://wx.zsxq.com/footprint/118512581214112?group_id=48885112884848 |
 
 ---
