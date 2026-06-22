@@ -75,7 +75,9 @@ class AuroraEngine:
 
     def step_cascade(self):
         if self.market_score < 40:
-            self.candidates = []; return
+            self.candidates = []
+            self.log.warning(f"[Cascade] 市场偏弱({self.market_score:.0f}<40), 暂停选股")
+            return
         from screening.cascade import cascade_screen
         self.candidates = cascade_screen(self.cfg)
         from data.sources import get_sector_ranking

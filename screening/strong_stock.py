@@ -75,4 +75,7 @@ def screen_strong_stocks(candidates: list, northbound=None, kline_cache=None) ->
     
     scored.sort(key=lambda x: x["strong_score"], reverse=True)
     logger.info(f"[Strong] {len(scored)} scored, grades: A={sum(1 for s in scored if s['strong_grade']=='A')} B={sum(1 for s in scored if s['strong_grade']=='B')}")
-    return scored[:20]
+    # 仅返回A/B级强势股 (strong_score>=65), 宁缺毋滥
+    quality = [s for s in scored if s["strong_score"] >= 65]
+    logger.info(f"[Strong] Quality filter: {len(quality)}/{len(scored)} passed (>=65)")
+    return quality[:15]
