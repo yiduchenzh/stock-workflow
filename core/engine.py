@@ -144,6 +144,14 @@ class AuroraEngine:
         from strategies.evolution import record_trade_result
         for p in self.plans:
             record_trade_result(p.get("strategy","?"), 0, True)  # 开仓记录
+        from strategies.behavior import record_entry
+        for p in self.plans:
+            record_entry(p)
+        from risk.profit_withdraw import check_withdraw
+        if acc.total_value > 0:
+            wd = check_withdraw(acc.total_value, self.capital)
+            if wd["should_withdraw"]:
+                self.log.warning(f"[Withdraw] {wd["reason"]}")
         self.log.info(f"[Step6] {len(self.plans)} opened")
 
     def step_monitor(self):
@@ -162,7 +170,11 @@ class AuroraEngine:
             self.log.warning(f"[Evolve] Dead strategies: {dead}")
 
     def step_review(self):
-        self.log.info(f"[Step9] {len(self.plans)} trades, {len(self.alerts)} alerts")
+        from strategies.behavior import diagnose
+        diag = diagnose()
+        if diag.get("issues"):
+            self.log.warning(f"[Step9] Bias: {"; ".join(diag["issues"])}")
+        self.log.info(f"[Step9] {len(self.plans)} trades, {len(self.alerts)} alerts, bias={diag.get("status","?")}")
 
     def step_prep(self):
         self.log.info("[Step9.5] Watchlist generated")

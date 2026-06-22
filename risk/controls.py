@@ -49,6 +49,15 @@ def check_all(plans: list, positions: dict, cfg: dict) -> tuple:
             alerts.append({"type": "var", "code": p.get("code"), 
                           "msg": f"GARCH-VaR超限: {risk_amount/capital*100:.1f}%>" + 
                                  f"{daily_loss_limit/capital*100:.1f}%"})
+    industries = {}
+    for p in filtered:
+        ind = p.get("industry", p.get("sector", ""))
+        if ind:
+            industries[ind] = industries.get(ind, 0) + 1
+    for ind, count in industries.items():
+        if count > 3:
+            alerts.append({"type": "concentration", "industry": ind,
+                          "msg": f"行业集中度: {ind}持仓{count}只(上限3)"})
     return filtered, alerts
 
 def record_trade(pnl_pct: float):
