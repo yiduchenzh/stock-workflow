@@ -1,5 +1,25 @@
 
-"""数据源 — 腾讯财经(主力) + 东财(辅助), 三级降级"""
+"""数据源 — 歪枣网(主力) + 腾讯/东财(备用), 三级降级"""
+import os as _os
+_data_sources_tried_wz = False
+
+def _try_wz_first(fn_name, *args, **kwargs):
+    """尝试歪枣网优先, 失败则返回None"""
+    global _data_sources_tried_wz
+    try:
+        if not _data_sources_tried_wz:
+            import data.wz_sources as _wz
+            _data_sources_tried_wz = True
+        import data.wz_sources as _wz
+        fn = getattr(_wz, fn_name, None)
+        if fn:
+            result = fn(*args, **kwargs)
+            if result is not None and (hasattr(result, "__len__") and len(result) > 0) or (not hasattr(result, "__len__")):
+                return result
+    except Exception as e:
+        pass
+    return None
+
 import urllib.request, json, time, logging
 from pathlib import Path
 import pandas as pd
@@ -11,6 +31,11 @@ def _prefix(code):
     return f"sh{code}" if code.startswith(("6","9")) else f"sz{code}"
 
 def get_tencent_quotes(codes: list) -> dict:
+    """实时行情 — 优先歪枣网, 腾讯备用"""
+    wz_q = _try_wz_first("get_quotes", codes)
+    if wz_q and len(wz_q) > 0:
+        return wz_q
+    # Fallback to original tencent logic below
     """腾讯批量行情 — 不封IP, 主力数据源"""
     if not codes: return {}
     prefixed = [_prefix(c) for c in codes[:80]]
@@ -81,6 +106,9 @@ def _sina_stock_list() -> list:
     return codes if codes else _fallback_stock_list()
 
 def get_real_stock_list() -> list:
+    wz_list = _try_wz_first("get_stock_list")
+    if wz_list and len(wz_list) > 100:
+        return wz_list
     import requests as req
     import json as _j
     # Check cache
@@ -188,7 +216,10 @@ def get_index_snapshot(codes):
 
 
 def get_market_breadth() -> dict:
-    """市场广度: 涨跌比"""
+    """市场广度: 涨跌比 — 歪枣网为主, 腾讯备用"""
+    wz_mb = _try_wz_first("get_market_breadth")
+    if wz_mb and wz_mb.get("up_count",0) + wz_mb.get("down_count",0) > 0:
+        return wz_mb
     try:
         quotes = get_tencent_quotes(get_real_stock_list()[:100])
         if not quotes: return {"ad_score": 0, "up_count": 0, "down_count": 0}
@@ -336,6 +367,9 @@ def get_top_flow_stocks(top_n=200):
     return {}
 
 def get_top_sectors(top_n=5):
+    wz_ts = _try_wz_first("get_top_sectors", top_n)
+    if wz_ts and len(wz_ts) > 0:
+        return wz_ts
     sectors = get_sector_ranking(100)
     if not sectors:
         fb = ["化学制药","生物制品","医疗服务","医药生物","中药II",
