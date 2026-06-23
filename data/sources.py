@@ -181,6 +181,7 @@ def get_kline(code: str, days: int = 250) -> pd.DataFrame:
         return pd.DataFrame()
 
 SECTOR_CACHE = Path(__file__).resolve().parent.parent / "data" / "sector_cache.json"
+FLOW_CACHE_FILE = Path(__file__).resolve().parent.parent / "data" / "flow_cache.json"
 
 def _save_sector_cache(sectors):
     try:
@@ -198,6 +199,25 @@ def _load_sector_cache():
     except Exception:
         pass
     return []
+
+def _save_flow_cache(data):
+    """Save flow data to local cache file"""
+    try:
+        FLOW_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        import json as _j
+        _j.dump(data, open(FLOW_CACHE_FILE, "w", encoding="utf-8"))
+    except Exception:
+        pass
+
+def _load_flow_cache():
+    """Load flow data from local cache file, return {} if not available"""
+    try:
+        if FLOW_CACHE_FILE.exists():
+            import json as _j
+            return _j.load(open(FLOW_CACHE_FILE, encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
 
 def get_sector_ranking(top_n: int = 50) -> list:
     """东财行业板块排名"""
@@ -224,6 +244,7 @@ def get_sector_ranking(top_n: int = 50) -> list:
             return cached
         return []
 def get_top_flow_stocks(top_n=200):
+    """获取资金流向排名（东财主力）, 含缓存降级 + Sina量比近似降级"""
     import requests as req
     try:
         url = 'https://push2.eastmoney.com/api/qt/clist/get'
@@ -235,11 +256,44 @@ def get_top_flow_stocks(top_n=200):
             c_code = str(it.get('f12',''))
             if len(c_code) == 6:
                 result[c_code] = it.get('f62', 0)
-        logger.info(f'[Flow] {len(result)} stocks with inflow data')
-        return result
+        if result:
+            _save_flow_cache(result)
+            logger.info(f'[Flow] {len(result)} stocks with inflow data')
+            return result
+        cached = _load_flow_cache()
+        if cached:
+            logger.info(f'[Flow] Cache hit: {len(cached)} stocks (Eastmoney returned empty)')
+            return cached
     except Exception as e:
-        logger.warning(f'Flow fail: {e}')
-        return {}
+        logger.warning(f'Flow Eastmoney fail: {e}')
+        cached = _load_flow_cache()
+        if cached:
+            logger.info(f'[Flow] Cache hit: {len(cached)} stocks')
+            return cached
+    # Sina-based fallback: approximate active money flow via vol_ratio > 2.0
+    try:
+        logger.info('[Flow] Trying Sina vol_ratio fallback')
+        stock_list = None
+        try:
+            stock_list = get_real_stock_list()
+        except Exception:
+            pass
+        if not stock_list:
+            stock_list = _fallback_stock_list()
+        quotes = get_tencent_quotes(stock_list[:200])
+        if quotes:
+            result = {}
+            for code, q in quotes.items():
+                vol_ratio = q.get('vol_ratio', 0)
+                if vol_ratio > 2.0:
+                    result[code] = vol_ratio * 1000000
+            if result:
+                result = dict(sorted(result.items(), key=lambda x: x[1], reverse=True)[:top_n])
+                logger.info(f'[Flow] Sina fallback: {len(result)} stocks with vol_ratio>2.0')
+                return result
+    except Exception as e2:
+        logger.warning(f'Flow Sina fallback also failed: {e2}')
+    return {}
 
 def get_top_sectors(top_n=5):
     sectors = get_sector_ranking(100)
