@@ -194,7 +194,7 @@ class AuroraEngine:
     def step_simulate(self):
         if not self.plans: return
         from monitor.simulator import SimAccount
-        acc = SimAccount(self.capital)
+        acc = SimAccount(self.capital, self.cfg)
         for p in self.plans:
             acc.buy(p["code"], p["entry_price"], p["shares"], p.get("strategy", ""))
         self.account = acc

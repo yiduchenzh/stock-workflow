@@ -1,8 +1,20 @@
-# Aurora Trading
+﻿# Aurora Trading
 system:
   name: "Aurora Trading"
   mode: "paper"
   log_level: "INFO"
+
+execution:
+  mode: "paper"
+  commission: 0.0003
+  stamp_tax: 0.001
+  slippage: 0.001
+  slippage_base: 0.003
+  slippage_tiers:
+    500: 0.001
+    100: 0.002
+    0: 0.003
+  impact_factor: 0.0001
 
 data:
   sources:
@@ -36,6 +48,8 @@ strategies:
     enabled: true
     atr_period: 14
     wave_pct: 3.0
+  chan_theory:
+    day_range: 0.01
 
 risk:
   max_positions: 5
@@ -44,6 +58,8 @@ risk:
   max_drawdown_pct: -10.0
   max_consecutive_losses: 3
   capital: 1000000
+  kelly_default: 0.08
+  position_base: 0.05
   position_weights:
     strong: 0.30
     normal: 0.20
