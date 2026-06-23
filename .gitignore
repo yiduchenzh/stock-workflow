@@ -20,3 +20,9 @@ monitor_output.txt
 review_output.txt
 test_detail.txt
 uv.lock
+
+_clean_engine.py
+_debug*
+_patch_engine.py
+_write_watcher.py
+core/engine_raw.txt
