@@ -1,0 +1,11 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.12.12, pytest-9.1.1, pluggy-1.6.0
+rootdir: D:\Hermes Agent CN Desktop\stock-workflow
+configfile: pyproject.toml
+collected 12 items
+
+tests\test_core.py ....                                                  [ 33%]
+tests\test_risk.py ....                                                  [ 66%]
+tests\test_simulator.py ....                                             [100%]
+
+============================= 12 passed in 0.34s ==============================

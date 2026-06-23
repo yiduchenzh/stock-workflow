@@ -1,0 +1,38 @@
+﻿python.exe : 2026-06-23 11:08:53,457 [WARNING] EM p1 fail(('Connection aborted.', RemoteDisconnected('Remote end closed
+ connection without response')))
+所在位置 行:1 字符: 1
++ & "D:\Hermes Agent CN Desktop\stock-workflow\.venv\Scripts\python.exe ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (2026-06-23 11:0...ut response'))):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+2026-06-23 11:08:53,565 [WARNING] EM p1 fail(('Connection aborted.', RemoteDisconnected('Remote end closed connection w
+ithout response')))
+2026-06-23 11:08:53,566 [WARNING] EM fail, try Sina
+2026-06-23 11:08:57,794 [INFO] [Sina] 1200 codes fallback
+2026-06-23 11:08:59,293 [WARNING] 板块数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection with
+out response'))
+2026-06-23 11:08:59,300 [INFO] [Step0] bear_weak (40/100) | 阶段⑥: 顶点/黄昏期 — 认知与现实背离
+2026-06-23 11:08:59,536 [INFO] [Step0] 北向: 净流出(0亿) (累计0亿)
+2026-06-23 11:08:59,625 [WARNING] EM p1 fail(('Connection aborted.', RemoteDisconnected('Remote end closed connection w
+ithout response')))
+2026-06-23 11:08:59,730 [WARNING] EM p1 fail(('Connection aborted.', RemoteDisconnected('Remote end closed connection w
+ithout response')))
+2026-06-23 11:08:59,730 [WARNING] EM fail, try Sina
+2026-06-23 11:09:03,063 [INFO] [Sina] 1200 codes fallback
+2026-06-23 11:09:03,266 [INFO] [选股] 4/80 通过粗筛
+2026-06-23 11:09:04,557 [WARNING] 板块数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection with
+out response'))
+2026-06-23 11:09:04,557 [INFO] [Cascade] 4 candidates
+2026-06-23 11:09:05,872 [WARNING] 板块数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection with
+out response'))
+2026-06-23 11:09:05,968 [WARNING] Flow fail: ('Connection aborted.', RemoteDisconnected('Remote end closed connection w
+ithout response'))
+2026-06-23 11:09:07,500 [INFO] [Strong] 4 scored, grades: A=0 B=2
+2026-06-23 11:09:07,501 [INFO] [Strong] Quality filter: 2/4 passed (>=65)
+2026-06-23 11:09:07,501 [INFO] [Strong] 强势股: 2只 (板块+RS+资金+基因)
+2026-06-23 11:09:07,672 [INFO] [Auction] 2/2 passed (CC>=1.5)
+2026-06-23 11:09:07,672 [INFO] [Auction] CC筛选后: 2只
+2026-06-23 11:09:07,686 [INFO] [CAN SLIM] 2/2 通过
+2026-06-23 11:09:07,686 [INFO] [Step1] CAN SLIM: 2 passed
+2026-06-23 11:09:08,169 [INFO] [Step2] 1 signals→0 confirmed (regime:bear_weak)

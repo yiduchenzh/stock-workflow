@@ -1,4 +1,4 @@
-﻿[project]
+[project]
 name = "aurora-trading"
 version = "1.0.0"
 description = "A股全自动交易系统 — 十三步闭环无人值守"

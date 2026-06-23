@@ -1,0 +1,56 @@
+﻿python.exe : 2026-06-23 11:09:25,234 [INFO] [EM] 1000 stocks
+所在位置 行:1 字符: 1
++ & "D:\Hermes Agent CN Desktop\stock-workflow\.venv\Scripts\python.exe ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (2026-06-23 11:0...EM] 1000 stocks:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+2026-06-23 11:09:26,756 [WARNING] 板块数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection with
+out response'))
+2026-06-23 11:09:26,765 [INFO] [Step0] bear_weak (42/100) | 阶段⑥: 顶点/黄昏期 — 认知与现实背离
+2026-06-23 11:09:26,993 [INFO] [Step0] 北向: 净流出(0亿) (累计0亿)
+2026-06-23 11:09:26,993 [INFO]   市场体检(6维度) OK
+2026-06-23 11:09:28,958 [WARNING] EM p1 fail(('Connection aborted.', RemoteDisconnected('Remote end closed connection w
+ithout response')))
+2026-06-23 11:09:28,958 [INFO] [EM] 500 stocks
+2026-06-23 11:09:29,193 [INFO] [选股] 6/80 通过粗筛
+2026-06-23 11:09:30,499 [WARNING] 板块数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection with
+out response'))
+2026-06-23 11:09:30,500 [INFO] [Cascade] 6 candidates
+2026-06-23 11:09:31,829 [WARNING] 板块数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection with
+out response'))
+2026-06-23 11:09:31,947 [WARNING] Flow fail: ('Connection aborted.', RemoteDisconnected('Remote end closed connection w
+ithout response'))
+2026-06-23 11:09:33,255 [WARNING] 板块数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection with
+out response'))
+2026-06-23 11:09:33,255 [INFO] [Strong] 6 scored, grades: A=0 B=2
+2026-06-23 11:09:33,255 [INFO] [Strong] Quality filter: 2/6 passed (>=65)
+2026-06-23 11:09:33,255 [INFO] [Strong] 强势股: 2只 (板块+RS+资金+基因)
+2026-06-23 11:09:33,352 [INFO] [Auction] 2/2 passed (CC>=1.5)
+2026-06-23 11:09:33,353 [INFO] [Auction] CC筛选后: 2只
+2026-06-23 11:09:33,353 [INFO]   三级联动(大盘→板块→个股) OK
+2026-06-23 11:09:33,354 [INFO] [CAN SLIM] 2/2 通过
+2026-06-23 11:09:33,354 [INFO] [Step1] CAN SLIM: 2 passed
+2026-06-23 11:09:33,354 [INFO]   CAN SLIM选股 OK
+2026-06-23 11:09:33,861 [INFO] [Step2] 0 signals→0 confirmed (regime:bear_weak)
+2026-06-23 11:09:33,861 [INFO]   7战法(多信号确认+量价验证) OK
+2026-06-23 11:09:33,861 [INFO]   综合评分(动态Kelly+regime) OK
+2026-06-23 11:09:33,861 [INFO]   仓位计划(真实Kelly+自适应) OK
+2026-06-23 11:09:33,861 [INFO]   风控(VaR+压力测试) OK
+2026-06-23 11:09:33,861 [INFO]   模拟交易(含移动止盈) OK
+2026-06-23 11:09:33,874 [INFO]   实时监控 OK
+2026-06-23 11:09:33,878 [INFO] [Step8]
+=== 策略统计 ===
+  ✅ first_board     trades=  0 win=0% pf=0.0 w=1.0
+  ✅ pullback        trades=  0 win=0% pf=0.0 w=1.0
+  ✅ wave_point      trades=  0 win=0% pf=0.0 w=1.0
+  ✅ test_line       trades=  0 win=0% pf=0.0 w=1.0
+  ✅ naked_k         trades=  0 win=0% pf=0.0 w=1.0
+  ✅ 123_rule        trades=  0 win=0% pf=0.0 w=1.0
+  ✅ ma_breakout     trades=  0 win=0% pf=0.0 w=1.0
+2026-06-23 11:09:33,881 [INFO]   策略评估(自进化统计) OK
+2026-06-23 11:09:33,882 [INFO] [Step9] 0 trades, 0 alerts, bias=insufficient_data
+2026-06-23 11:09:33,882 [INFO]   复盘(行为偏误) OK
+2026-06-23 11:09:33,882 [INFO] [Step9.5] Watchlist generated
+2026-06-23 11:09:33,882 [INFO]   次日准备 OK
+2026-06-23 11:09:33,882 [INFO] Done — 13.6s
