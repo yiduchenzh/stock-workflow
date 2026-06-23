@@ -1,4 +1,4 @@
-[project]
+﻿[project]
 name = "aurora-trading"
 version = "1.0.0"
 description = "A股全自动交易系统 — 十三步闭环无人值守"
@@ -10,6 +10,9 @@ dependencies = [
     "requests>=2.28",
     "PySide6>=6.5",
 ]
+
+[project.optional-dependencies]
+broker = ["pywinauto>=0.6.9"]
 
 [project.scripts]
 aurora = "core.engine:main"
