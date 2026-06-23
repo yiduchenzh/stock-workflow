@@ -82,6 +82,41 @@ def get_real_stock_list() -> list:
         logger.warning(f"股票列表获取失败({e}), use fallback list")
         return _fallback_stock_list()
 
+def get_top_flow_stocks(top_n: int = 200) -> list:
+    """资金净流入TOP N股票列表(东财主力净流入f62排序)"""
+    import requests
+    try:
+        url = "https://push2.eastmoney.com/api/qt/clist/get"
+        params = {"pn":"1","pz":str(top_n),"po":"1","np":"1","fltt":"2","invt":"2",
+                  "fs":"m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",
+                  "fields":"f12,f62","fid":"f62"}
+        r = requests.get(url, params=params, 
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}, 
+            timeout=15)
+        items = r.json().get("data",{}).get("diff",[]) or []
+        # f62 = 主力净流入, 返回含代码+净流入额
+        result = {}
+        for it in items:
+            c = str(it.get("f12",""))
+            if len(c) == 6:
+                result[c] = it.get("f62", 0)
+        logger.info(f"[Flow] {len(result)} stocks with capital inflow data")
+        return result
+    except Exception as e:
+        logger.warning(f"资金流向获取失败: {e}")
+        return {}
+
+def get_top_sectors(top_n: int = 5) -> list:
+    """板块涨幅TOP N名称列表"""
+    sectors = get_sector_ranking(100)
+    if not sectors:
+        return []
+    sectors.sort(key=lambda s: s.get("change_pct", 0), reverse=True)
+    top = [s["name"] for s in sectors[:top_n] if s.get("name")]
+    logger.info(f"[Sector] Top {top_n}: {top}")
+    return top
+
+
 def get_index_snapshot(codes: list) -> dict:
     """获取指数快照"""
     return get_tencent_quotes(codes)

@@ -93,8 +93,12 @@ class AuroraEngine:
         # 强势股筛选: 板块轮动+资金流向+RS排名+涨停基因
         if self.candidates:
             from screening.strong_stock import screen_strong_stocks
+            from data.sources import get_top_sectors, get_top_flow_stocks
+            top_sectors = get_top_sectors(5)
+            flow_stocks = get_top_flow_stocks(200)
             self.candidates = screen_strong_stocks(self.candidates, 
-                getattr(self, "northbound", None))
+                getattr(self, "northbound", None),
+                top_sectors=top_sectors, flow_stocks=flow_stocks)
             self.log.info(f"[Strong] 强势股: {len(self.candidates)}只 (板块+RS+资金+基因)")
         # 集合竞价筛选
         from screening.auction import auction_screen

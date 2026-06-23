@@ -4,9 +4,23 @@ import logging
 from data.sources import get_tencent_quotes, get_sector_ranking
 logger = logging.getLogger("aurora.strong")
 
-def screen_strong_stocks(candidates: list, northbound=None, kline_cache=None) -> list:
+def screen_strong_stocks(candidates: list, northbound=None, kline_cache=None, top_sectors=None, flow_stocks=None) -> list:
     """强势股=板块强+个股领涨+资金流入+涨停基因"""
     if not candidates: return []
+    
+    # 0. 板块龙头过滤: 仅保留板块涨幅TOP5候选股
+    if top_sectors is not None and len(top_sectors) > 0:
+        before = len(candidates)
+        candidates = [c for c in candidates if c.get("industry", "") in top_sectors]
+        logger.info(f"[Strong] Sector top5 filter: {len(candidates)}/{before} passed")
+        if not candidates: return []
+    
+    # 0b. 资金净流入过滤: 仅保留主力净流入TOP200候选股
+    if flow_stocks is not None and len(flow_stocks) > 0:
+        before = len(candidates)
+        candidates = [c for c in candidates if c.get("code", "") in flow_stocks]
+        logger.info(f"[Strong] Capital flow top200 filter: {len(candidates)}/{before} passed")
+        if not candidates: return []
     
     # 1. 板块轮动热度
     sectors = get_sector_ranking(100) or []
