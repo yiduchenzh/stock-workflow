@@ -82,6 +82,16 @@ def _sina_stock_list() -> list:
 
 def get_real_stock_list() -> list:
     import requests as req
+    import json as _j
+    # Check cache
+    try:
+        if STOCK_CACHE.exists():
+            data = _j.loads(STOCK_CACHE.read_text())
+            if __import__("time").time() - data.get("time", 0) < STOCK_CACHE_TTL:
+                logger.info(f"[Cache] {len(data.get('codes',[]))} stocks ({(STOCK_CACHE_TTL - (__import__("time").time() - data['time'])):.0f}s TTL)")
+                return data["codes"]
+    except: pass
+    
     codes = []
     for fs in ['m:0+t:6,m:0+t:80', 'm:1+t:2,m:1+t:23']:
         for pn in range(1, 6):
@@ -95,8 +105,7 @@ def get_real_stock_list() -> list:
                 if len(items) < 100: break
             except Exception as e:
                 logger.warning(f'EM p{pn} fail({e}), retry once')
-                import time as _t
-                _t.sleep(2.0)
+                __import__("time").sleep(2.0)
                 try:
                     r2 = req.get(url, params={'pn': pn, 'pz': 100, 'po': 1, 'np': 1, 'fltt': 2, 'invt': 2, 'fs': fs, 'fields': 'f12'},
                                headers={'User-Agent': UA, 'Referer': 'https://quote.eastmoney.com/'}, timeout=10)
@@ -112,9 +121,18 @@ def get_real_stock_list() -> list:
     if codes:
         result = list(dict.fromkeys(codes))
         logger.info(f'[EM] {len(result)} stocks')
+        # Save to cache
+        try:
+            STOCK_CACHE.write_text(_j.dumps({"time": __import__("time").time(), "codes": result}))
+        except: pass
         return result
     logger.warning('EM fail, try Sina')
-    return _sina_stock_list()
+    codes = _sina_stock_list()
+    if codes:
+        try:
+            STOCK_CACHE.write_text(_j.dumps({"time": __import__("time").time(), "codes": codes}))
+        except: pass
+    return codes
 
 
 def get_kline_period(code: str, period: str = "day", days: int = 250):
@@ -201,6 +219,8 @@ def get_kline(code: str, days: int = 250) -> pd.DataFrame:
         return pd.DataFrame()
 
 SECTOR_CACHE = Path(__file__).resolve().parent.parent / "data" / "sector_cache.json"
+STOCK_CACHE = Path(__file__).resolve().parent.parent / "data" / "stock_cache.json"
+STOCK_CACHE_TTL = 300  # 5 minutes
 FLOW_CACHE_FILE = Path(__file__).resolve().parent.parent / "data" / "flow_cache.json"
 
 def _save_sector_cache(sectors):
