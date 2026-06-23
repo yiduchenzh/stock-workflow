@@ -1,11 +1,10 @@
-
-"""缠论 v3.0 — 108课完整映射 + 区间套精确定位"""
+# -*- coding: utf-8 -*-
+"""缠论 v3.0 - 108课完整映射 + 区间套精确定位"""
 import numpy as np
 import pandas as pd
 import logging
 logger = logging.getLogger("aurora.chan")
 
-# ═══ 第0层: K线包含处理 ═══
 def _merge_klines(df):
     if df is None or len(df) < 2: return df
     o, h, l, c = df["open"].values, df["high"].values, df["low"].values, df["close"].values
@@ -23,7 +22,6 @@ def _merge_klines(df):
             direction = 1 if o[i] > merged_o[-2] else -1
     return pd.DataFrame({"open": merged_o, "high": merged_h, "low": merged_l, "close": merged_c})
 
-# ═══ 第1层: 分型 ═══
 def detect_fractals(kline_df):
     if kline_df is None:
         return {"tops": [], "bottoms": [], "bs_points": [], "fractal_count": 0, "signal": False}
@@ -39,7 +37,6 @@ def detect_fractals(kline_df):
         elif low[i] < low[i-1] and low[i] < low[i+1] and high[i] < high[i-1] and high[i] < high[i+1]:
             strength = "strong" if close[i+1] < (high[i] + low[i]) / 2 else "normal"
             bottoms.append({"idx": i, "price": float(low[i]), "strength": strength})
-    
     bs = _classify_bs_points(tops, bottoms, close, df)
     return {
         "tops": tops[-10:], "bottoms": bottoms[-10:],
@@ -47,9 +44,8 @@ def detect_fractals(kline_df):
         "signal": len(bs) > 0, "last_bs": bs[-1] if bs else None,
     }
 
-# ═══ 第2层: 笔(Bi) ═══
 def _detect_bi(df, _depth=0):
-    if _depth > 1: return []  # recursion guard
+    if _depth > 1: return []
     result = detect_fractals(df)
     tops, bottoms = result["tops"], result["bottoms"]
     bis, ti, bi = [], 0, 0
@@ -69,14 +65,22 @@ def _detect_bi(df, _depth=0):
             else: ti += 1
     return bis
 
-# ═══ 第3-4层: 中枢 ═══
-def _detect_hub(df):
+def _detect_hub(df, min_bars_between=None):
     bis = _detect_bi(df)
-    if len(bis) < 3: return []
-    swings = [(min(bi["start"], bi["end"]), max(bi["start"], bi["end"])) for bi in bis[-12:]]
+    is_small = df is not None and len(df) < 100
+    if min_bars_between is None:
+        min_bars_between = 3 if is_small else 5
+    if len(bis) < min_bars_between:
+        return []
+    if len(bis) < 15:
+        swings = [(min(bi["start"], bi["end"]), max(bi["start"], bi["end"])) for bi in bis]
+    else:
+        limit = max(min_bars_between * 3, 12)
+        swings = [(min(bi["start"], bi["end"]), max(bi["start"], bi["end"])) for bi in bis[-limit:]]
     hubs = []
     for i in range(len(swings) - 2):
-        highs = [s[1] for s in swings[i:i+3]]; lows = [s[0] for s in swings[i:i+3]]
+        highs = [s[1] for s in swings[i:i+3]]
+        lows = [s[0] for s in swings[i:i+3]]
         ZG, ZD = min(highs), max(lows)
         if ZD < ZG:
             hubs.append({"ZD": round(ZD, 2), "ZG": round(ZG, 2),
@@ -84,78 +88,150 @@ def _detect_hub(df):
                         "width_pct": round((ZG - ZD) / ZD * 100, 2)})
     return hubs
 
-# ═══ 第5层: 背驰 ═══
+def _calc_rsi(prices, period=14):
+    deltas = np.diff(prices)
+    gains = np.maximum(deltas, 0)
+    losses = np.maximum(-deltas, 0)
+    avg_gain = np.mean(gains[:period])
+    avg_loss = np.mean(losses[:period])
+    if avg_loss == 0:
+        rsi_arr = [100.0] * len(prices)
+        rsi_arr[:period] = [np.nan] * period
+        return np.array(rsi_arr)
+    rs = avg_gain / avg_loss
+    rsi_vals = [np.nan] * period
+    rsi_vals.append(100 - 100 / (1 + rs))
+    for i in range(period + 1, len(prices)):
+        avg_gain = (avg_gain * (period - 1) + gains[i - 1]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i - 1]) / period
+        if avg_loss == 0:
+            rsi_vals.append(100.0)
+        else:
+            rsi_vals.append(100 - 100 / (1 + avg_gain / avg_loss))
+    return np.array(rsi_vals)
+
 def _detect_divergence(df, hubs):
-    if df is None or len(df) < 60 or not hubs: return []
+    if df is None or len(df) < 60 or not hubs:
+        return []
     close = df["close"].values
     divergences = []
-    hub = hubs[-1]; ZD, ZG = hub["ZD"], hub["ZG"]
-    into_seg = abs(ZG - ZD); leave_seg = abs(close[-1] - ZG)
-    if leave_seg < into_seg * 0.618:
-        divergences.append({"type": "trend_divergence",
-                           "into_pct": round(into_seg/ZD*100, 1),
-                           "leave_pct": round(leave_seg/ZD*100, 1),
-                           "position": "顶部背驰" if close[-1] > ZG else "底部背驰"})
+
+    # METHOD 1: Price trend (multi-hub check)
+    for hub in hubs[-3:]:
+        ZD, ZG = hub["ZD"], hub["ZG"]
+        into_seg = abs(ZG - ZD)
+        leave_seg = abs(close[-1] - ZG)
+        if leave_seg < into_seg * 0.618:
+            divergences.append({
+                "type": "trend_divergence",
+                "into_pct": round(into_seg / ZD * 100, 1),
+                "leave_pct": round(leave_seg / ZD * 100, 1),
+                "position": "顶部背驰" if close[-1] > ZG else "底部背驰"
+            })
+            break
+
+    # METHOD 2: RSI divergence
+    rsi = _calc_rsi(close)
+    if len(rsi) > 30 and not np.all(np.isnan(rsi[-20:])):
+        lookback = min(20, len(close))
+        recent_close = close[-lookback:]
+        recent_rsi = rsi[-lookback:]
+        hh_idx = np.argmax(recent_close)
+        hh_rsi = recent_rsi[hh_idx]
+        ll_idx = np.argmin(recent_close)
+        ll_rsi = recent_rsi[ll_idx]
+
+        prev_high_idx = np.argmax(recent_close[:max(hh_idx, 1)])
+        if 0 < prev_high_idx < hh_idx:
+            prev_high_rsi = recent_rsi[prev_high_idx]
+            if not np.isnan(hh_rsi) and not np.isnan(prev_high_rsi) and hh_rsi < prev_high_rsi:
+                divergences.append({
+                    "type": "rsi_divergence",
+                    "position": "顶部背驰",
+                    "price_high": round(float(recent_close[hh_idx]), 2),
+                    "rsi_current": round(float(hh_rsi), 1),
+                    "rsi_previous": round(float(prev_high_rsi), 1),
+                    "strength": "strong" if (prev_high_rsi - hh_rsi) > 10 else "normal"
+                })
+
+        prev_low_idx = np.argmin(recent_close[:max(ll_idx, 1)])
+        if 0 < prev_low_idx < ll_idx:
+            prev_low_rsi = recent_rsi[prev_low_idx]
+            if not np.isnan(ll_rsi) and not np.isnan(prev_low_rsi) and ll_rsi > prev_low_rsi:
+                divergences.append({
+                    "type": "rsi_divergence",
+                    "position": "底部背驰",
+                    "price_low": round(float(recent_close[ll_idx]), 2),
+                    "rsi_current": round(float(ll_rsi), 1),
+                    "rsi_previous": round(float(prev_low_rsi), 1),
+                    "strength": "strong" if (ll_rsi - prev_low_rsi) > 10 else "normal"
+                })
+
+    # METHOD 3: Volume-price divergence
+    volume = df["volume"].values
+    if len(volume) > 20:
+        lookback = min(20, len(volume))
+        vol_window = volume[-lookback:]
+        price_window = close[-lookback:]
+        vol_trend = np.polyfit(np.arange(len(vol_window)), vol_window, 1)[0]
+        price_trend = np.polyfit(np.arange(len(price_window)), price_window, 1)[0]
+        if price_trend > 0 and vol_trend < 0:
+            divergences.append({
+                "type": "volume_divergence",
+                "position": "顶部背驰",
+                "price_trend": "up",
+                "volume_trend": "down",
+                "strength": "strong" if abs(vol_trend) > abs(price_trend) * 1000 else "normal"
+            })
+        elif price_trend < 0 and vol_trend < 0:
+            divergences.append({
+                "type": "volume_divergence",
+                "position": "底部背驰",
+                "price_trend": "down",
+                "volume_trend": "down",
+                "strength": "normal",
+                "note": "缩量下跌, 抛压减弱"
+            })
+
     return divergences
 
-# ═══ 第6层: 买卖点 ═══
 def _classify_bs_points(_tops, _bottoms, _close, df):
-    """完整的三类买卖点"""
     points = []
-    # Compute hubs here (cached to prevent recursion)
     try:
         hubs = _detect_hub(df)
         divergences = _detect_divergence(df, hubs)
     except (RecursionError, Exception):
         hubs = []; divergences = []
-    # Classify buy/sell points from hub+divergence
     for h, d in zip(hubs[-10:], divergences[-10:]):
         if "顶部" in d.get("position","") or "顶背" in d.get("position",""):
             points.append({"type": "sell", "level": d.get("level", 0), "position": d.get("position","")})
         elif "底部" in d.get("position","") or "底背" in d.get("position",""):
             points.append({"type": "buy", "level": d.get("level", 0), "position": d.get("position","")})
     return points
-# ═══════════════════════════════════════════════
-# 第7层: 区间套 — 缠论最精妙技法
-# ═══════════════════════════════════════════════
+
 def interval_nesting(kline_df):
-    """区间套精确定位: 日线→中级别→小级别 三级递归
-    
-    缠师原文: "大级别定方向+中级别定区间+小级别定点位"
-    如望远镜找到目标, 再换显微镜精确定位。
-    """
     if kline_df is None or len(kline_df) < 90:
         return {"precision": "low", "score": 0, "detail": "数据不足(<90日)"}
-    
-    # ── 级别1: 日线(大级别) — 定方向 ──
     l1_result = detect_fractals(kline_df)
     l1_hubs = _detect_hub(kline_df)
     l1_div = _detect_divergence(kline_df, l1_hubs)
-    
     if not l1_div:
         return {"precision": "none", "score": 0, "detail": "日线无背驰,区间套无触发"}
-    
     l1_direction = "bullish" if any("底部" in d["position"] for d in l1_div) else "bearish"
-    
-    # ── 级别2: 中级别(日线OHLC模拟30F) — 定区间 ──
     mid_df = _simulate_mid_level(kline_df)
     l2_result = detect_fractals(mid_df) if mid_df is not None else {"bs_points": [], "signal": False}
     l2_hubs = _detect_hub(mid_df) if mid_df is not None else []
     l2_div = _detect_divergence(mid_df, l2_hubs) if mid_df is not None else []
-    
     mid_confirmed = any(
         ("底部" in d["position"] and l1_direction == "bullish") or
         ("顶部" in d["position"] and l1_direction == "bearish")
         for d in l2_div
     ) if l2_div else False
-    
-    # ── 级别3: 小级别(OHLC模拟5F) — 定点位 ──
     if mid_confirmed:
         small_df = _simulate_small_level(kline_df)
         l3_result = detect_fractals(small_df) if small_df is not None else {"bs_points": [], "signal": False}
         l3_hubs = _detect_hub(small_df) if small_df is not None else []
         l3_div = _detect_divergence(small_df, l3_hubs) if small_df is not None else []
-        
         precise = any(
             ("底部" in d["position"] and l1_direction == "bullish") or
             ("顶部" in d["position"] and l1_direction == "bearish")
@@ -165,28 +241,20 @@ def interval_nesting(kline_df):
         precise = False
         l3_result = {"signal": False, "last_bs": None}
         l3_div = []
-    
-    # ── 区间套精确定位结果 ──
     if precise:
-        precision = "high"
-        score = 95
-        detail = f"三级区间套共振: 日线{l1_direction}+中级确认+小级精确定位"
+        precision = "high"; score = 95
+        detail = "三级区间套共振: 日线" + l1_direction + "+中级确认+小级精确定位"
     elif mid_confirmed:
-        precision = "medium"
-        score = 75
-        detail = f"两级确认: 日线{l1_direction}+中级确认, 缺小级精确"
+        precision = "medium"; score = 75
+        detail = "两级确认: 日线" + l1_direction + "+中级确认, 缺小级精确"
     elif l1_div:
-        precision = "low"
-        score = 50
-        detail = f"仅日线背驰: {l1_div[0]['position']}, 需等次级确认"
+        precision = "low"; score = 50
+        detail = "仅日线背驰: " + l1_div[0]["position"] + ", 需等次级确认"
     else:
         precision = "none"; score = 0; detail = "无背驰触发"
-    
-    # 精确定位点
     l3_last = l3_result.get("last_bs") if l3_result.get("signal") else None
     l1_last = l1_result.get("last_bs") if l1_result.get("signal") else None
     entry_point = l3_last["price"] if l3_last else (l1_last["price"] if l1_last else None)
-    
     return {
         "precision": precision, "score": score, "detail": detail,
         "direction": l1_direction,
@@ -197,70 +265,56 @@ def interval_nesting(kline_df):
     }
 
 def _simulate_mid_level(df, _ratio=4):
-    """日线OHLC模拟中级别(30分钟代理)"""
     if df is None or len(df) < 20: return None
     rows = []
-    close = df["close"].values; high = df["high"].values; low = df["low"].values; open_ = df["open"].values
+    close = df["close"].values; high = df["high"].values; low = df["low"].values; open_val = df["open"].values
     for i in range(5, len(close)):
-        # 用4个"子段"模拟日内4个30分钟K线
         day_range = high[i] - low[i]
         if day_range <= 0: day_range = 0.01
-        body = close[i] - open_[i]
-        # 子段1: 开盘→日内极值方向
-        rows.append({"open": open_[i], "high": high[i] if body > 0 else open_[i] + day_range*0.3,
-                    "low": open_[i] - day_range*0.1, "close": open_[i] + body*0.3})
-        # 子段2
-        rows.append({"open": rows[-1]["close"], "high": max(body > 0 and high[i] or open_[i], rows[-1]["close"]),
-                    "low": min(body < 0 and low[i] or open_[i], rows[-1]["close"]),
+        body = close[i] - open_val[i]
+        rows.append({"open": open_val[i], "high": high[i] if body > 0 else open_val[i] + day_range*0.3,
+                    "low": open_val[i] - day_range*0.1, "close": open_val[i] + body*0.3})
+        rows.append({"open": rows[-1]["close"],
+                    "high": max((body > 0 and high[i] or open_val[i]), rows[-1]["close"]),
+                    "low": min((body < 0 and low[i] or open_val[i]), rows[-1]["close"]),
                     "close": close[i] - body*0.4 if body > 0 else close[i] + abs(body)*0.4})
-        # 子段3
         rows.append({"open": rows[-1]["close"], "high": max(rows[-1]["close"], close[i]),
                     "low": min(rows[-1]["close"], close[i]), "close": (rows[-1]["close"] + close[i]) / 2})
-        # 子段4
         rows.append({"open": rows[-1]["close"], "high": max(rows[-1]["close"], close[i]),
                     "low": min(rows[-1]["close"], close[i]), "close": close[i]})
     return pd.DataFrame(rows)
 
 def _simulate_small_level(df, ratio=12):
-    """模拟小级别(5分钟代理)"""
     if df is None or len(df) < 20: return None
     rows = []
-    close = df["close"].values; open_ = df["open"].values
+    close = df["close"].values; open_val = df["open"].values
     for i in range(5, len(close)):
-        body = close[i] - open_[i]; step = body / ratio if ratio else 0.01
-        o = open_[i]
+        body = close[i] - open_val[i]; step = body / ratio if ratio else 0.01
+        o = open_val[i]
         for j in range(ratio):
             c = o + step; h = max(o, c); l = min(o, c)
             rows.append({"open": o, "high": h, "low": l, "close": c})
             o = c
     return pd.DataFrame(rows)
 
-# ═══ 综合评分 (含区间套) ═══
 def chan_score(kline_df):
     if kline_df is None or len(kline_df) < 30: return 40
-    
-    # 基础分析
     result = detect_fractals(kline_df)
     hubs = _detect_hub(kline_df) if kline_df is not None else []
     divergences = _detect_divergence(kline_df, hubs)
-    
     score = 40
     if result["fractal_count"] >= 3: score += 5
     if hubs: score += 10
     if divergences: score += 10
     if result.get("signal"): score += 5
-    
     last = result.get("last_bs")
     if last:
         if last["type"] == "buy3": score += 15
         elif last["type"] == "buy2": score += 10
         elif last["type"] == "buy1": score += 3
         elif "sell" in last["type"]: score -= 5
-    
-    # 区间套精确定位加分 (最高+15)
     nesting = interval_nesting(kline_df)
     if nesting["precision"] == "high": score += 15
     elif nesting["precision"] == "medium": score += 8
     elif nesting["precision"] == "low": score += 3
-    
     return min(max(score, 0), 100)

@@ -116,63 +116,14 @@ def get_real_stock_list() -> list:
     logger.warning('EM fail, try Sina')
     return _sina_stock_list()
 
-
-def get_kline_period(code: str, period: str = "day", days: int = 250):
-    """多周期K线: day/week/month — 真实数据来自腾讯"""
-    import requests as req
-    pfx = _prefix(code)
-    period_map = {"day": "day", "week": "week", "month": "month"}
-    p = period_map.get(period, "day")
-    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={pfx},{p},,,{days},qfq"
-    try:
-        r = req.get(url, headers={"User-Agent": UA}, timeout=10)
-        data = r.json().get("data", {}).get(pfx, {})
-        keys = {"day": "qfqday", "week": "qfqweek", "month": "qfqmonth"}
-        raw = data.get(keys.get(p, "qfqday"), [])
-        if not raw: raw = data.get(p, [])
-        if not raw: return __import__("pandas").DataFrame()
-        rows = []
-        for d in raw:
-            rows.append({"date": str(d[0]), "open": float(d[1]), "close": float(d[2]),
-                        "high": float(d[3]), "low": float(d[4]), "volume": float(d[5]) if len(d)>5 else 0})
-        df = __import__("pandas").DataFrame(rows)
-        df["date"] = __import__("pandas").to_datetime(df["date"])
-        return df
-    except Exception as e:
-        logger.warning(f"K线获取失败 {code} {period}: {e}")
-        return __import__("pandas").DataFrame()
-
-
-def get_index_snapshot(codes):
+def get_index_snapshot(codes: list) -> dict:
     """获取指数快照"""
-    idx_map = {"000001":"sh000001","399001":"sz399001","399006":"sz399006","000688":"sh000688","000300":"sh000300"}
-    mapped = [idx_map.get(c,_prefix(c)+c) for c in codes]
-    if not mapped: return {}
-    import urllib.request
-    url = "https://qt.gtimg.cn/q=" + ",".join(mapped)
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    try:
-        data = urllib.request.urlopen(req, timeout=10).read().decode("gbk","replace")
-    except Exception as e:
-        logger.warning(f"Index fail: {e}")
-        return {}
-    result = {}
-    for line in data.strip().split(";"):
-        if "=" not in line: continue
-        parts = line.split("=")
-        key = parts[0].split("_")[-1]
-        if '"' not in parts[1]: continue
-        vals = parts[1].split('"')[1].split("~")
-        if len(vals) < 3: continue
-        c2 = key[2:] if key[:2] in ("sh","sz") else key
-        result[c2] = {"code":c2,"name":vals[1],"price":float(vals[3]) if vals[3] else 0,"change_pct":float(vals[32]) if len(vals)>32 and vals[32] else 0}
-    return result
-
+    return get_tencent_quotes(codes)
 
 def get_market_breadth() -> dict:
     """市场广度: 涨跌比"""
     try:
-        quotes = get_tencent_quotes(get_real_stock_list()[:100])
+        quotes = get_tencent_quotes(get_real_stock_list()[:200])
         if not quotes: return {"ad_score": 0, "up_count": 0, "down_count": 0}
         changes = [q.get("change_pct", 0) for q in quotes.values()]
         up = sum(1 for c in changes if c > 0)
@@ -201,7 +152,6 @@ def get_kline(code: str, days: int = 250) -> pd.DataFrame:
         return pd.DataFrame()
 
 SECTOR_CACHE = Path(__file__).resolve().parent.parent / "data" / "sector_cache.json"
-FLOW_CACHE_FILE = Path(__file__).resolve().parent.parent / "data" / "flow_cache.json"
 
 def _save_sector_cache(sectors):
     try:
@@ -219,25 +169,6 @@ def _load_sector_cache():
     except Exception:
         pass
     return []
-
-def _save_flow_cache(data):
-    """Save flow data to local cache file"""
-    try:
-        FLOW_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        import json as _j
-        _j.dump(data, open(FLOW_CACHE_FILE, "w", encoding="utf-8"))
-    except Exception:
-        pass
-
-def _load_flow_cache():
-    """Load flow data from local cache file, return {} if not available"""
-    try:
-        if FLOW_CACHE_FILE.exists():
-            import json as _j
-            return _j.load(open(FLOW_CACHE_FILE, encoding="utf-8"))
-    except Exception:
-        pass
-    return {}
 
 def get_sector_ranking(top_n: int = 50) -> list:
     """东财行业板块排名"""
@@ -264,7 +195,6 @@ def get_sector_ranking(top_n: int = 50) -> list:
             return cached
         return []
 def get_top_flow_stocks(top_n=200):
-    """获取资金流向排名（东财主力）, 含缓存降级 + Sina量比近似降级"""
     import requests as req
     try:
         url = 'https://push2.eastmoney.com/api/qt/clist/get'
@@ -276,44 +206,11 @@ def get_top_flow_stocks(top_n=200):
             c_code = str(it.get('f12',''))
             if len(c_code) == 6:
                 result[c_code] = it.get('f62', 0)
-        if result:
-            _save_flow_cache(result)
-            logger.info(f'[Flow] {len(result)} stocks with inflow data')
-            return result
-        cached = _load_flow_cache()
-        if cached:
-            logger.info(f'[Flow] Cache hit: {len(cached)} stocks (Eastmoney returned empty)')
-            return cached
+        logger.info(f'[Flow] {len(result)} stocks with inflow data')
+        return result
     except Exception as e:
-        logger.warning(f'Flow Eastmoney fail: {e}')
-        cached = _load_flow_cache()
-        if cached:
-            logger.info(f'[Flow] Cache hit: {len(cached)} stocks')
-            return cached
-    # Sina-based fallback: approximate active money flow via vol_ratio > 2.0
-    try:
-        logger.info('[Flow] Trying Sina vol_ratio fallback')
-        stock_list = None
-        try:
-            stock_list = get_real_stock_list()
-        except Exception:
-            pass
-        if not stock_list:
-            stock_list = _fallback_stock_list()
-        quotes = get_tencent_quotes(stock_list[:200])
-        if quotes:
-            result = {}
-            for code, q in quotes.items():
-                vol_ratio = q.get('vol_ratio', 0)
-                if vol_ratio > 2.0:
-                    result[code] = vol_ratio * 1000000
-            if result:
-                result = dict(sorted(result.items(), key=lambda x: x[1], reverse=True)[:top_n])
-                logger.info(f'[Flow] Sina fallback: {len(result)} stocks with vol_ratio>2.0')
-                return result
-    except Exception as e2:
-        logger.warning(f'Flow Sina fallback also failed: {e2}')
-    return {}
+        logger.warning(f'Flow fail: {e}')
+        return {}
 
 def get_top_sectors(top_n=5):
     sectors = get_sector_ranking(100)
