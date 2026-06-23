@@ -362,6 +362,13 @@ class AuroraEngine:
         dead = [n for n, h in health.items() if h.get("status") == "dead"]
         if dead:
             self.log.warning(f"[Evolve] Dead strategies: {dead}")
+        # Phase 3: Weekly self-evolution (Friday only)
+        from datetime import datetime
+        if datetime.now().weekday() == 4:  # Friday
+            from weekly_evolution import clear_suspensions, run_weekly_evolution
+            clear_suspensions()
+            report = run_weekly_evolution()
+            self.log.info(f"[Evolution] {report}")
 
     def step_review(self):
         from strategies.behavior import diagnose
