@@ -8,3 +8,5 @@ data/aurora.log
 config.yaml
 .vscode/
 *.egg-info/
+
+data/sector_cache.json
