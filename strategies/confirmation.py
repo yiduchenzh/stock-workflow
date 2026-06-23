@@ -42,7 +42,7 @@ def _check_volume_price(kline: dict = None) -> bool:
     """量价八法: 价涨量增=健康"""
     if kline is None or not isinstance(kline, dict): return True
     df = kline.get("df")
-    if df is None or len(df) < 5: return True
+    if df is None or len(df) < 5: return False
     c = df["close"].values; v = df["volume"].values
     price_up = c[-1] > c[-2]
     vol_up = v[-1] > np.mean(v[-5:-1])

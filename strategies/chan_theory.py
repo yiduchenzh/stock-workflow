@@ -195,18 +195,101 @@ def _detect_divergence(df, hubs):
 
     return divergences
 
+def _ema(data, period):
+    alpha = 2 / (period + 1)
+    result = [float(data[0])]
+    for i in range(1, len(data)):
+        result.append(alpha * float(data[i]) + (1 - alpha) * result[-1])
+    return np.array(result)
+
 def _classify_bs_points(_tops, _bottoms, _close, df):
+    """缠论123买卖点分类 + MACD面积背离"""
     points = []
     try:
         hubs = _detect_hub(df)
+        # MACD area divergence for 1st point
+        if hubs and df is not None and len(df) > 60:
+            close = df["close"].values
+            # Compute MACD
+            ema12 = _ema(close, 12); ema26 = _ema(close, 26)
+            dif = ema12 - ema26; dea = _ema(dif, 9)
+            macd = (dif - dea) * 2
+            
+            # Last hub
+            last_hub = hubs[-1]
+            ZD, ZG = last_hub["ZD"], last_hub["ZG"]
+            
+            # Find segments: into-hub segment (previous swing) and leave-hub segment (current)
+            hub_mid = (ZD + ZG) / 2
+            close_arr = close
+            
+            # Detect trend direction before hub
+            pre_idx = max(0, len(close_arr) - 40)
+            pre_avg = np.mean(close_arr[pre_idx:pre_idx+10])
+            post_avg = np.mean(close_arr[-10:])
+            
+            # Into-segment MACD area (before hub formation)
+            hub_start = max(0, len(close_arr) - 30)
+            into_area = sum(abs(macd[hub_start:hub_start+15])) if len(macd) > hub_start+15 else 0
+            
+            # Leave-segment MACD area (after hub, current)
+            leave_start = max(0, len(close_arr) - 15)
+            leave_area = sum(abs(macd[leave_start:])) if len(macd) > leave_start else 0
+            
+            # === 第一类买卖点 (趋势背驰) ===
+            # 下跌趋势+底背驰: price lower low, MACD area smaller = 1st buy
+            if pre_avg > post_avg and close_arr[-1] < hub_mid:  # 下跌中
+                if leave_area < into_area * 0.8 and into_area > 0:  # MACD面积缩小
+                    points.append({"type": "buy1", "position": "第一类买点(趋势背驰)", 
+                                   "price": round(float(close_arr[-1]), 2), "score": 85})
+            
+            # 上涨趋势+顶背驰: price higher high, MACD area smaller = 1st sell
+            if pre_avg < post_avg and close_arr[-1] > hub_mid:  # 上涨中
+                if leave_area < into_area * 0.8 and into_area > 0:
+                    points.append({"type": "sell1", "position": "第一类卖点(趋势背驰)",
+                                   "price": round(float(close_arr[-1]), 2), "score": 85})
+            
+            # === 第二类买卖点 (回抽不破) ===
+            if points:
+                last = points[-1]
+                if "buy1" in last["type"]:
+                    # 1st buy出现后, 价格回抽不破前低 = 2nd buy
+                    if len(close_arr) > 5:
+                        pullback_low = min(close_arr[-5:])
+                        buy1_low = last["price"]
+                        if pullback_low > buy1_low * 0.98:
+                            points.append({"type": "buy2", "position": f"第二类买点(回抽不破{buy1_low:.2f})",
+                                           "price": round(float(close_arr[-1]), 2), "score": 75})
+                elif "sell1" in last["type"]:
+                    if len(close_arr) > 5:
+                        bounce_high = max(close_arr[-5:])
+                        sell1_high = last["price"]
+                        if bounce_high < sell1_high * 1.02:
+                            points.append({"type": "sell2", "position": f"第二类卖点(反弹不破{sell1_high:.2f})",
+                                           "price": round(float(close_arr[-1]), 2), "score": 75})
+            
+            # === 第三类买卖点 (离开中枢不回抽) ===
+            if len(close_arr) > 5:
+                recent_high = max(close_arr[-5:])
+                recent_low = min(close_arr[-5:])
+                # 向上离开中枢+回抽不进入中枢ZG = 3rd buy
+                if recent_high > ZG and recent_low > ZG:
+                    points.append({"type": "buy3", "position": f"第三类买点(回抽不进中枢{ZG:.2f})",
+                                   "price": round(float(close_arr[-1]), 2), "score": 80})
+                # 向下离开中枢+反弹不进入中枢ZD = 3rd sell
+                if recent_low < ZD and recent_high < ZD:
+                    points.append({"type": "sell3", "position": f"第三类卖点(反弹不进中枢{ZD:.2f})",
+                                   "price": round(float(close_arr[-1]), 2), "score": 80})
+        
+        # Also include divergences from _detect_divergence
         divergences = _detect_divergence(df, hubs)
+        for d in divergences:
+            if "底部" in d.get("position",""):
+                points.append({"type": "buy", "level": d.get("level", 0), "position": d.get("position",""), "score": 60})
+            elif "顶部" in d.get("position",""):
+                points.append({"type": "sell", "level": d.get("level", 0), "position": d.get("position",""), "score": 60})
     except (RecursionError, Exception):
-        hubs = []; divergences = []
-    for h, d in zip(hubs[-10:], divergences[-10:]):
-        if "顶部" in d.get("position","") or "顶背" in d.get("position",""):
-            points.append({"type": "sell", "level": d.get("level", 0), "position": d.get("position","")})
-        elif "底部" in d.get("position","") or "底背" in d.get("position",""):
-            points.append({"type": "buy", "level": d.get("level", 0), "position": d.get("position","")})
+        pass
     return points
 
 def interval_nesting(kline_df):
@@ -309,10 +392,14 @@ def chan_score(kline_df):
     if result.get("signal"): score += 5
     last = result.get("last_bs")
     if last:
-        if last["type"] == "buy3": score += 15
-        elif last["type"] == "buy2": score += 10
-        elif last["type"] == "buy1": score += 3
+        if last["type"] == "buy3": score += 20
+        elif last["type"] == "buy2": score += 15
+        elif last["type"] == "buy1": score += 25
+        elif last["type"] == "sell3": score += 15
+        elif last["type"] == "sell2": score += 10
+        elif last["type"] == "sell1": score += 20
         elif "sell" in last["type"]: score -= 5
+        elif "buy" in last["type"]: score += 5
     nesting = interval_nesting(kline_df)
     if nesting["precision"] == "high": score += 15
     elif nesting["precision"] == "medium": score += 8
