@@ -6,8 +6,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
     handlers=[logging.FileHandler("data/aurora.log", encoding="utf-8"), logging.StreamHandler()])
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--phase", default="full", choices=["auction","monitor","review","full"],
-                   help="auction=竞价选股, monitor=盘中监控+T0, review=盘后复盘, full=全流程")
+parser.add_argument("--phase", default="full", choices=["auction","monitor","review","morning","full"],
+                   help="auction=竞价选股, monitor=盘中监控+T0, review=盘后复盘, morning=晨报, full=全流程")
 args = parser.parse_args()
 
 from core.engine import AuroraEngine
@@ -22,6 +22,13 @@ if args.phase == "auction":
     engine.step_analyze()
     engine.step_score()
     push_auction_results(engine)
+elif args.phase == "morning":
+    engine.step_market()
+    engine.step_cascade()
+    engine.step_screen()
+    from notify.pusher import push_morning_report
+    push_morning_report(engine)
+
 elif args.phase == "monitor":
     engine.step_market()
     engine.step_cascade()

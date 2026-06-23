@@ -1,6 +1,7 @@
 """推送系统 v2.0 — 竞价/信号/复盘 分阶段推送"""
-import os, requests, logging
+import os, json, requests, logging
 from datetime import datetime
+from pathlib import Path
 logger = logging.getLogger("aurora.push")
 
 def push_auction_results(engine):
@@ -55,6 +56,96 @@ def push_daily_review(engine):
     if diag.get("issues"):
         desc += f"\n⚠️ 行为: {'; '.join(diag['issues'])}"
     _send(title, desc, engine)
+
+def push_morning_report(engine):
+    candidates = getattr(engine, "candidates", [])
+    screened = getattr(engine, "screened", [])
+    title = "Aurora晨报 " + datetime.now().strftime("%m-%d %H:%M")
+    lines = []
+    NL = chr(10)
+    lines.append("【市场总览】")
+    lines.append("大盘评分: " + str(engine.market_score) + "/100 | 状态: " + engine.market_regime)
+    nb = getattr(engine, "northbound", {})
+    lines.append("北向资金: " + str(nb.get("signal","N/A")))
+    lines.append("")
+    lines.append("【板块热点TOP5】")
+    try:
+        from data.sources import get_sector_ranking
+        sectors = (get_sector_ranking(10) or [])
+        sectors.sort(key=lambda s: s.get("change_pct",0), reverse=True)
+        for i, s in enumerate(sectors[:5]):
+            lines.append(str(i+1) + ". " + str(s.get("name","")) + " " + "{:+.1f}%".format(s.get("change_pct",0)) + " 涨" + str(s.get("up",0)) + "跌" + str(s.get("down",0)))
+    except Exception:
+        lines.append("  (数据获取失败)")
+    lines.append("")
+    lines.append("【当前持仓】")
+    pdir = Path(__file__).resolve().parent.parent
+    sf = pdir / "data" / "sim_state.json"
+    tf = pdir / "data" / "sim_trades.json"
+    positions = {}
+    trades = []
+    if sf.exists():
+        try:
+            sd = json.loads(sf.read_text())
+            positions = sd.get("positions", {})
+        except: pass
+    if tf.exists():
+        try:
+            trades = json.loads(tf.read_text())
+        except: pass
+    if positions:
+        for code, pos in positions.items():
+            sh = pos.get("shares",0)
+            co = pos.get("avg_cost",0)
+            cu = pos.get("current_price", co)
+            pp = (cu/co-1)*100
+            pnl = (cu-co)*sh
+            lines.append(code + " " + str(sh) + "股 成本{:.2f} 现价{:.2f} 盈亏{:+.1f}%({:+.0f}元)".format(co,cu,pp,pnl))
+            for t in reversed(trades):
+                if t.get("action")=="buy" and t.get("code")==code:
+                    lines.append("  买入: " + str(t.get("time",""))[:16])
+                    break
+    else:
+        lines.append("  空仓")
+    lines.append("")
+    lines.append("【早盘选股】")
+    if candidates:
+        lines.append("候选股: " + str(len(candidates)) + "只 通过CAN SLIM: " + str(len(screened)) + "只")
+        target = screened[:5] if screened else candidates[:5]
+        for ci in target:
+            g = str(ci.get("strong_grade","?"))
+            sc = str(ci.get("strong_score", ci.get("can_slim",0)))
+            lines.append("  " + str(ci.get("code","?")) + " " + str(ci.get("name","?")) + " " + g + "分=" + sc)
+    else:
+        lines.append("  今日无候选")
+    lines.append("")
+    lines.append("【今日策略】")
+    ms = engine.market_score
+    if ms < 25: lines.append("市场极弱, 全清仓观望")
+    elif ms < 40: lines.append("市场偏弱, 持仓减半, 不开新仓")
+    elif ms < 55: lines.append("震荡市, 持仓观察, 谨慎开仓")
+    elif ms < 70: lines.append("市场偏强, 可半仓操作")
+    else: lines.append("市场强势, 可满仓操作")
+    if positions:
+        for code, pos in positions.items():
+            co = pos.get("avg_cost",0)
+            cu = pos.get("current_price", co)
+            pp = (cu/co-1)*100
+            if pp >= 10: lines.append("  " + code + ": 盈利>10%, 建议减仓1/3锁利")
+            elif pp >= 5: lines.append("  " + code + ": 盈利>5%, 设保本线至{:.2f}".format(co*1.05))
+            elif pp >= 0: lines.append("  " + code + ": 微利持平, 持有观察")
+            else: lines.append("  " + code + ": 亏损中, 关注止损位{:.2f}".format(co*0.95))
+    tv = 0
+    for p in positions.values():
+        tv += p.get("shares",0) * p.get("current_price", p.get("avg_cost",0))
+    ca = 0
+    if sf.exists():
+        try: ca = json.loads(sf.read_text()).get("cash",0)
+        except: pass
+    tv += ca
+    lines.append("总资产: {:,}元 | 持仓: {}只 | 现金: {:,}元".format(int(tv), len(positions), int(ca)))
+    _send(title, NL.join(lines), engine)
+
 
 def _send(title, desc, engine):
     token = engine.cfg.get("notify", {}).get("sct_token", "")
