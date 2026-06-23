@@ -62,60 +62,45 @@ def _fallback_stock_list() -> list:
         "688520","688533","688536","688599","688660","688728","688766","688777","688819","688981",
     ]
 
+def _sina_stock_list() -> list:
+    import requests as req
+    codes = []
+    nodes = {'sh_a': '6', 'sz_a': '0', 'cyb': '3'}
+    for node, _ in nodes.items():
+        for pn in range(1, 5):
+            try:
+                url = 'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData'
+                r = req.get(url, params={'page': pn, 'num': 100, 'sort': 'code', 'asc': '1', 'node': node}, timeout=10)
+                items = r.json() if isinstance(r.json(), list) else []
+                chunk = [it['code'] for it in items if isinstance(it, dict) and len(it.get('code','')) == 6]
+                codes.extend(chunk)
+                if len(items) < 100: break
+            except: break
+    logger.info(f'[Sina] {len(codes)} codes fallback')
+    return codes if codes else _fallback_stock_list()
+
 def get_real_stock_list() -> list:
-    """东财获取实际A股列表(缓存30分钟)"""
-    try:
-        import requests
-        codes = []
-        for fs in ["m:0+t:6,m:0+t:80", "m:1+t:2,m:1+t:23"]:
-            url = "https://push2.eastmoney.com/api/qt/clist/get"
-            params = {"pn":"1","pz":"6000","po":"1","np":"1","fltt":"2","invt":"2","fs":fs,"fields":"f12"}
-            headers = {"User-Agent": UA, "Referer": "https://quote.eastmoney.com/"}
-            time.sleep(1.2)
-            r = requests.get(url, params=params, headers=headers, timeout=15)
-            items = r.json().get("data",{}).get("diff",[]) or []
-            for it in items:
-                c = it.get("f12","")
-                if len(c) == 6: codes.append(c)
-        return list(dict.fromkeys(codes))
-    except Exception as e:
-        logger.warning(f"股票列表获取失败({e}), use fallback list")
-        return _fallback_stock_list()
-
-def get_top_flow_stocks(top_n: int = 200) -> list:
-    """资金净流入TOP N股票列表(东财主力净流入f62排序)"""
-    import requests
-    try:
-        url = "https://push2.eastmoney.com/api/qt/clist/get"
-        params = {"pn":"1","pz":str(top_n),"po":"1","np":"1","fltt":"2","invt":"2",
-                  "fs":"m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",
-                  "fields":"f12,f62","fid":"f62"}
-        r = requests.get(url, params=params, 
-            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}, 
-            timeout=15)
-        items = r.json().get("data",{}).get("diff",[]) or []
-        # f62 = 主力净流入, 返回含代码+净流入额
-        result = {}
-        for it in items:
-            c = str(it.get("f12",""))
-            if len(c) == 6:
-                result[c] = it.get("f62", 0)
-        logger.info(f"[Flow] {len(result)} stocks with capital inflow data")
+    import requests as req
+    codes = []
+    for fs in ['m:0+t:6,m:0+t:80', 'm:1+t:2,m:1+t:23']:
+        for pn in range(1, 6):
+            try:
+                url = 'https://push2.eastmoney.com/api/qt/clist/get'
+                r = req.get(url, params={'pn': pn, 'pz': 100, 'po': 1, 'np': 1, 'fltt': 2, 'invt': 2, 'fs': fs, 'fields': 'f12'},
+                           headers={'User-Agent': UA, 'Referer': 'https://quote.eastmoney.com/'}, timeout=10)
+                items = r.json().get('data', {}).get('diff', []) or []
+                chunk = [it['f12'] for it in items if len(str(it.get('f12',''))) == 6]
+                codes.extend(chunk)
+                if len(items) < 100: break
+            except Exception as e:
+                logger.warning(f'EM p{pn} fail({e})')
+                break
+    if codes:
+        result = list(dict.fromkeys(codes))
+        logger.info(f'[EM] {len(result)} stocks')
         return result
-    except Exception as e:
-        logger.warning(f"资金流向获取失败: {e}")
-        return {}
-
-def get_top_sectors(top_n: int = 5) -> list:
-    """板块涨幅TOP N名称列表"""
-    sectors = get_sector_ranking(100)
-    if not sectors:
-        return []
-    sectors.sort(key=lambda s: s.get("change_pct", 0), reverse=True)
-    top = [s["name"] for s in sectors[:top_n] if s.get("name")]
-    logger.info(f"[Sector] Top {top_n}: {top}")
-    return top
-
+    logger.warning('EM fail, try Sina')
+    return _sina_stock_list()
 
 def get_index_snapshot(codes: list) -> dict:
     """获取指数快照"""
@@ -165,3 +150,29 @@ def get_sector_ranking(top_n: int = 50) -> list:
     except Exception as e:
         logger.warning(f"板块数据失败: {e}")
         return []
+def get_top_flow_stocks(top_n=200):
+    import requests as req
+    try:
+        url = 'https://push2.eastmoney.com/api/qt/clist/get'
+        params = {'pn':1, 'pz':top_n, 'po':1, 'np':1, 'fltt':2, 'invt':2, 'fs':'m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23', 'fields':'f12,f62', 'fid':'f62'}
+        r = req.get(url, params=params, headers={'User-Agent':UA, 'Referer':'https://quote.eastmoney.com/'}, timeout=15)
+        items = r.json().get('data',{}).get('diff',[]) or []
+        result = {}
+        for it in items:
+            c_code = str(it.get('f12',''))
+            if len(c_code) == 6:
+                result[c_code] = it.get('f62', 0)
+        logger.info(f'[Flow] {len(result)} stocks with inflow data')
+        return result
+    except Exception as e:
+        logger.warning(f'Flow fail: {e}')
+        return {}
+
+def get_top_sectors(top_n=5):
+    sectors = get_sector_ranking(100)
+    if not sectors:
+        return []
+    sectors.sort(key=lambda s: s.get('change_pct', 0), reverse=True)
+    top = [s['name'] for s in sectors[:top_n] if s.get('name')]
+    logger.info(f'[Sector] Top {top_n}: {top}')
+    return top
