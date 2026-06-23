@@ -39,6 +39,7 @@ elif args.phase == "monitor":
     engine.step_risk()
     engine.step_simulate()
     engine.step_monitor()
+    engine.step_rebalance()
     push_trade_signal(engine)
 elif args.phase == "review":
     engine.run()

@@ -38,6 +38,7 @@ class AuroraEngine:
             ("step_risk", "风控(VaR+压力测试)"),
             ("step_simulate", "模拟交易(含移动止盈)"),
             ("step_monitor", "实时监控"),
+            ("step_rebalance", "动态调仓(板块+Regime)"),
             ("step_evaluate", "策略评估(自进化统计)"),
             ("step_review", "复盘(行为偏误)"),
             ("step_prep", "次日准备"),
@@ -260,6 +261,82 @@ class AuroraEngine:
                 self.log.warning(f"  [STOP] {a['code']}: 触发止损@{a.get('price',0):.2f}")
             elif a.get("type") == "take_profit":
                 self.log.info(f"  [SELL] {a['code']}: 触发止盈@{a.get('price',0):.2f}")
+        # Phase B: 板块排名调仓 + Regime仓位管理
+        self.step_rebalance()
+
+    def step_rebalance(self):
+        """动态调仓: 板块排名+市场状态→调整现有持仓"""
+        if not self.positions:
+            return
+        from data.sources import get_sector_ranking
+        from strategies.regime import get_regime_config
+        sectors_list = get_sector_ranking(50) or []
+        sectors = {s["name"]: {"pct": s.get("change_pct",0), "rank": i+1}
+                   for i, s in enumerate(sectors_list)}
+        if not sectors:
+            self.log.info("[Rebalance] 无板块数据,跳过")
+            return
+        
+        # A: 板块排名检查 — 弱板块卖出
+        from data.sources import get_tencent_quotes
+        codes = list(self.positions.keys())
+        quotes = get_tencent_quotes(codes)
+        sell_list = []
+        
+        for code, pos in self.positions.items():
+            shares = pos.get("shares", 0)
+            if shares <= 0: continue
+            industry = pos.get("industry", "")
+            cur_price = quotes.get(code, {}).get("price", pos.get("current_price", pos.get("avg_cost", 0)))
+            
+            if industry and industry in sectors:
+                info = sectors[industry]
+                rank = info["rank"]
+                if rank > 20:
+                    sell_list.append({"code": code, "shares": shares, "price": cur_price,
+                                      "reason": f"板块[{industry}]排名{rank}>20,清仓"})
+                    self.log.warning(f"  [Rebalance SELL] {code}: {sell_list[-1]['reason']}")
+                elif rank > 10:
+                    half = max(100, shares // 2)
+                    sell_list.append({"code": code, "shares": half, "price": cur_price,
+                                      "reason": f"板块[{industry}]排名{rank}>10,减半"})
+                    self.log.info(f"  [Rebalance REDUCE] {code}: {sell_list[-1]['reason']}")
+        
+        # B: Regime仓位上限管理
+        regime_cfg = get_regime_config(self.market_regime)
+        max_pos = regime_cfg.get("max_positions", 5)
+        cur_pos = len(self.positions)
+        
+        if cur_pos > max_pos:
+            extra = cur_pos - max_pos
+            # 按板块排名排序, 卖出最差的
+            ranked_codes = []
+            for code in self.positions:
+                ind = self.positions[code].get("industry", "")
+                r = sectors.get(ind, {}).get("rank", 99)
+                ranked_codes.append((r, code))
+            ranked_codes.sort(key=lambda x: -x[0])  # 最差的排前面
+            
+            for _, code in ranked_codes[:extra]:
+                pos = self.positions[code]
+                shares = pos.get("shares", 0)
+                cur_price = quotes.get(code, {}).get("price", pos.get("current_price", 0))
+                if shares >= 100:
+                    sell_list.append({"code": code, "shares": shares, "price": cur_price,
+                                      "reason": f"regime={self.market_regime}上限{max_pos}仓,超{extra}仓"})
+                    self.log.warning(f"  [Rebalance SELL] {code}: {sell_list[-1]['reason']}")
+        
+        # C: 执行卖出 (模拟账户操作)
+        for s in sell_list:
+            from monitor.simulator import SimAccount
+            acc = SimAccount(self.capital, self.cfg)
+            result = acc.sell(s["code"], s["price"], s["shares"], s["reason"])
+            if result and result.get("success"):
+                self.alerts.append({"type": "rebalance", "code": s["code"],
+                                    "msg": s["reason"], "shares": s["shares"]})
+                self.log.info(f"  [Sell] {s['code']} {s['shares']}sh @{s['price']:.2f} {s['reason']}")
+            else:
+                self.log.warning(f"  [Sell FAIL] {s['code']}: {result}")
 
     def step_evaluate(self):
         from backtest.engine import get_backtest_engine
