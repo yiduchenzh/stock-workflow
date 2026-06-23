@@ -8,7 +8,6 @@ logger = logging.getLogger("aurora.data")
 UA = "Mozilla/5.0"
 
 def _prefix(code):
-    if code in ("000001","000300","000688"): return f"sh{code}"
     return f"sh{code}" if code.startswith(("6","9")) else f"sz{code}"
 
 def get_tencent_quotes(codes: list) -> dict:
@@ -117,37 +116,9 @@ def get_real_stock_list() -> list:
     logger.warning('EM fail, try Sina')
     return _sina_stock_list()
 
-
-def get_kline_period(code: str, period: str = "day", days: int = 250):
-    """多周期K线: day/week/month — 真实数据来自腾讯"""
-    import requests as req
-    pfx = _prefix(code)
-    period_map = {"day": "day", "week": "week", "month": "month"}
-    p = period_map.get(period, "day")
-    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={pfx},{p},,,{days},qfq"
-    try:
-        r = req.get(url, headers={"User-Agent": UA}, timeout=10)
-        data = r.json().get("data", {}).get(pfx, {})
-        keys = {"day": "qfqday", "week": "qfqweek", "month": "qfqmonth"}
-        raw = data.get(keys.get(p, "qfqday"), [])
-        if not raw: raw = data.get(p, [])
-        if not raw: return __import__("pandas").DataFrame()
-        rows = []
-        for d in raw:
-            rows.append({"date": str(d[0]), "open": float(d[1]), "close": float(d[2]),
-                        "high": float(d[3]), "low": float(d[4]), "volume": float(d[5]) if len(d)>5 else 0})
-        df = __import__("pandas").DataFrame(rows)
-        df["date"] = __import__("pandas").to_datetime(df["date"])
-        return df
-    except Exception as e:
-        logger.warning(f"K线获取失败 {code} {period}: {e}")
-        return __import__("pandas").DataFrame()
-
-
 def get_index_snapshot(codes: list) -> dict:
     """获取指数快照"""
     return get_tencent_quotes(codes)
-
 
 def get_market_breadth() -> dict:
     """市场广度: 涨跌比"""

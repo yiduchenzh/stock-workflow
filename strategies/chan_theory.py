@@ -110,10 +110,10 @@ def _classify_bs_points(_tops, _bottoms, _close, df):
         hubs = []; divergences = []
     # Classify buy/sell points from hub+divergence
     for h, d in zip(hubs[-10:], divergences[-10:]):
-        if d.get("divergence_type") == "top":
-            points.append({"type": "sell", "level": d.get("level", 0)})
-        elif d.get("divergence_type") == "bottom":
-            points.append({"type": "buy", "level": d.get("level", 0)})
+        if "顶部" in d.get("position","") or "顶背" in d.get("position",""):
+            points.append({"type": "sell", "level": d.get("level", 0), "position": d.get("position","")})
+        elif "底部" in d.get("position","") or "底背" in d.get("position",""):
+            points.append({"type": "buy", "level": d.get("level", 0), "position": d.get("position","")})
     return points
 # ═══════════════════════════════════════════════
 # 第7层: 区间套 — 缠论最精妙技法
