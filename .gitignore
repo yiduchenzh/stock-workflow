@@ -26,3 +26,15 @@ _debug*
 _patch_engine.py
 _write_watcher.py
 core/engine_raw.txt
+data/stock_cache.json
+
+*.txt
+_ins*
+_insert*
+_write*
+r18_*.py
+r19_*.py
+run_audit.py
+test_div*.py
+write_*.py
+data/backtest*.json
