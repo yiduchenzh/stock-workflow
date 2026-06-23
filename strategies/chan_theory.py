@@ -108,6 +108,13 @@ def _classify_bs_points(_tops, _bottoms, _close, df):
         divergences = _detect_divergence(df, hubs)
     except (RecursionError, Exception):
         hubs = []; divergences = []
+    # Classify buy/sell points from hub+divergence
+    for h, d in zip(hubs[-10:], divergences[-10:]):
+        if d.get("divergence_type") == "top":
+            points.append({"type": "sell", "level": d.get("level", 0)})
+        elif d.get("divergence_type") == "bottom":
+            points.append({"type": "buy", "level": d.get("level", 0)})
+    return points
 # ═══════════════════════════════════════════════
 # 第7层: 区间套 — 缠论最精妙技法
 # ═══════════════════════════════════════════════

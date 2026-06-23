@@ -19,3 +19,4 @@ test_write*.py
 monitor_output.txt
 review_output.txt
 test_detail.txt
+uv.lock

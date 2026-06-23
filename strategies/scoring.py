@@ -53,8 +53,8 @@ def composite_score(analysis: list, market_regime: str, market_score: float) -> 
                  chan_score_val + liq_score + market_adapt + cs + pattern_bonus)
         
         # GARCH波动率调整
-        from risk.garch_var import get_garch_kelly_adjustment
-        garch_adj = get_garch_kelly_adjustment(kline_df) if kline_df is not None else 1.0
+        from risk.garch_var import get_kelly_adjustment
+        garch_adj = get_kelly_adjustment(kline_df) if kline_df is not None else 1.0
         total *= garch_adj
         
         # 反身性调整
