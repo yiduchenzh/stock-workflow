@@ -249,6 +249,21 @@ class AuroraEngine:
             self.alerts.extend(contingency_alerts)
             for ca in contingency_alerts:
                 self.log.warning(f"  [ALERT] {ca['type']}: {ca['code']} {ca['reason']}")
+        # Phase C: 多周期盘中分析 (日线+30分+5分)
+        from strategies.mtf_intraday import analyze_stock
+        for pc in list(self.positions.keys()):
+            try:
+                r = analyze_stock(pc, has_position=True)
+                act = r["decision"].get("action","wait")
+                desc = r["decision"].get("desc","")
+                if act in ("close_long","reduce"):
+                    self.log.warning(f"  [MTF SELL] {pc}: {desc}")
+                    self.alerts.append({"type":"mtf","code":pc,"desc":desc})
+                elif act == "hold":
+                    self.log.debug(f"  [MTF HOLD] {pc}: {desc}")
+            except Exception as e:
+                self.log.debug(f"  [MTF] {pc} fail: {e}")
+        
         # Phase 1b: Act on watcher alerts (trailing stop, scale-out)
         for a in alerts:
             if a.get("type") == "breach_stop":
