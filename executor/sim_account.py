@@ -144,4 +144,4 @@ class SimAccount(BaseExecutor):
                 d = json.loads(STATE.read_text())
                 self.cash = d.get("cash", self.capital)
                 self.positions = d.get("positions", {})
-            except: pass
+            except Exception: pass

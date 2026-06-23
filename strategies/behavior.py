@@ -39,7 +39,7 @@ def diagnose() -> dict:
 
 def _load_journal():
     try: return json.loads(JOURNAL.read_text()) if JOURNAL.exists() else []
-    except: return []
+    except Exception: return []
 def _save_journal(j):
     JOURNAL.parent.mkdir(parents=True, exist_ok=True)
     JOURNAL.write_text(json.dumps(j[-200:], indent=2, ensure_ascii=False))

@@ -1,18 +1,17 @@
-"""华泰桥接Worker — 32位Python操控xiadan.exe (subprocess JSON通信)"""
+﻿"""鍗庢嘲妗ユ帴Worker 鈥?32浣峆ython鎿嶆帶xiadan.exe (subprocess JSON閫氫俊)"""
 import json, sys, time, logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [HT] %(message)s")
 logger = logging.getLogger("ht_worker")
 
 def main():
-    """接收JSON指令, 操控华泰客户端, 返回JSON结果"""
+    """鎺ユ敹JSON鎸囦护, 鎿嶆帶鍗庢嘲瀹㈡埛绔? 杩斿洖JSON缁撴灉"""
     if len(sys.argv) < 2:
         print(json.dumps({"success": False, "error": "No command"}))
         return
     
     try:
         cmd = json.loads(sys.argv[1])
-    except:
-        print(json.dumps({"success": False, "error": "Invalid JSON"}))
+    except Exception:`r`n        print(json.dumps({"success": False, "error": "Invalid JSON"}))
         return
     
     action = cmd.get("action", "")
@@ -38,19 +37,19 @@ def main():
     print(json.dumps(result, ensure_ascii=False, default=str))
 
 def _connect():
-    """连接华泰客户端窗口"""
+    """杩炴帴鍗庢嘲瀹㈡埛绔獥鍙?""
     try:
         from pywinauto import Application
-        # 尝试连接已运行的xiadan.exe
+        # 灏濊瘯杩炴帴宸茶繍琛岀殑xiadan.exe
         app = Application(backend="win32").connect(path=r"C:\htzqzyb3\xiadan.exe")
-        dlg = app.window(class_name="#32770")  # 华泰对话框
+        dlg = app.window(class_name="#32770")  # 鍗庢嘲瀵硅瘽妗?
         if not dlg.exists():
-            # 尝试连接主窗口
+            # 灏濊瘯杩炴帴涓荤獥鍙?
             dlg = app.top_window()
         return app, dlg
     except Exception as e:
-        logger.error(f"连接失败: {e}")
-        # 尝试启动客户端
+        logger.error(f"杩炴帴澶辫触: {e}")
+        # 灏濊瘯鍚姩瀹㈡埛绔?
         try:
             import subprocess
             subprocess.Popen([r"C:\htzqzyb3\xiadan.exe"])
@@ -60,89 +59,89 @@ def _connect():
             dlg = app.top_window()
             return app, dlg
         except Exception as e2:
-            raise RuntimeError(f"无法连接华泰客户端: {e2}")
+            raise RuntimeError(f"鏃犳硶杩炴帴鍗庢嘲瀹㈡埛绔? {e2}")
 
 def _do_buy(cmd):
-    """执行买入"""
+    """鎵ц涔板叆"""
     code = cmd.get("code", "")
     price = cmd.get("price", 0)
     shares = cmd.get("shares", 0)
     
     try:
         app, dlg = _connect()
-        # 点击"买入"按钮
-        dlg.child_window(title="买入", control_type="Button").click()
+        # 鐐瑰嚮"涔板叆"鎸夐挳
+        dlg.child_window(title="涔板叆", control_type="Button").click()
         time.sleep(0.5)
         
-        # 输入股票代码
-        buy_dlg = app.window(title_re=".*买入.*")
+        # 杈撳叆鑲＄エ浠ｇ爜
+        buy_dlg = app.window(title_re=".*涔板叆.*")
         buy_dlg.child_window(auto_id="stockCode").set_text(code)
         time.sleep(0.3)
         
-        # 输入价格
+        # 杈撳叆浠锋牸
         buy_dlg.child_window(auto_id="price").set_text(str(price))
         
-        # 输入数量
+        # 杈撳叆鏁伴噺
         buy_dlg.child_window(auto_id="amount").set_text(str(shares))
         
-        # 点击"买入"确认
-        buy_dlg.child_window(title="买入", control_type="Button").click()
+        # 鐐瑰嚮"涔板叆"纭
+        buy_dlg.child_window(title="涔板叆", control_type="Button").click()
         time.sleep(0.5)
         
-        # 确认弹窗
-        confirm = app.window(title="提示")
+        # 纭寮圭獥
+        confirm = app.window(title="鎻愮ず")
         if confirm.exists():
-            confirm.child_window(title="确定", control_type="Button").click()
+            confirm.child_window(title="纭畾", control_type="Button").click()
         
         return {"success": True, "code": code, "price": price, "shares": shares,
-                "message": "买入委托已提交"}
+                "message": "涔板叆濮旀墭宸叉彁浜?}
     except Exception as e:
-        return {"success": False, "error": f"买入失败: {e}"}
+        return {"success": False, "error": f"涔板叆澶辫触: {e}"}
 
 def _do_sell(cmd):
-    """执行卖出"""
+    """鎵ц鍗栧嚭"""
     code = cmd.get("code", "")
     price = cmd.get("price", 0)
     shares = cmd.get("shares", 0)
     
     try:
         app, dlg = _connect()
-        dlg.child_window(title="卖出", control_type="Button").click()
+        dlg.child_window(title="鍗栧嚭", control_type="Button").click()
         time.sleep(0.5)
         
-        sell_dlg = app.window(title_re=".*卖出.*")
+        sell_dlg = app.window(title_re=".*鍗栧嚭.*")
         sell_dlg.child_window(auto_id="stockCode").set_text(code)
         time.sleep(0.3)
         sell_dlg.child_window(auto_id="price").set_text(str(price))
         sell_dlg.child_window(auto_id="amount").set_text(str(shares))
-        sell_dlg.child_window(title="卖出", control_type="Button").click()
+        sell_dlg.child_window(title="鍗栧嚭", control_type="Button").click()
         time.sleep(0.5)
         
-        confirm = app.window(title="提示")
+        confirm = app.window(title="鎻愮ず")
         if confirm.exists():
-            confirm.child_window(title="确定", control_type="Button").click()
+            confirm.child_window(title="纭畾", control_type="Button").click()
         
         return {"success": True, "code": code, "price": price, "shares": shares,
-                "message": "卖出委托已提交"}
+                "message": "鍗栧嚭濮旀墭宸叉彁浜?}
     except Exception as e:
-        return {"success": False, "error": f"卖出失败: {e}"}
+        return {"success": False, "error": f"鍗栧嚭澶辫触: {e}"}
 
 def _get_positions():
-    """获取持仓列表"""
+    """鑾峰彇鎸佷粨鍒楄〃"""
     try:
         app, dlg = _connect()
-        # 点击"持仓"标签
-        dlg.child_window(title="持仓", control_type="TabItem").click() if dlg.child_window(title="持仓", control_type="TabItem").exists() else None
+        # 鐐瑰嚮"鎸佷粨"鏍囩
+        dlg.child_window(title="鎸佷粨", control_type="TabItem").click() if dlg.child_window(title="鎸佷粨", control_type="TabItem").exists() else None
         time.sleep(1)
         
-        # 读取持仓表格 (华泰客户端用SysListView32)
+        # 璇诲彇鎸佷粨琛ㄦ牸 (鍗庢嘲瀹㈡埛绔敤SysListView32)
         grid = dlg.child_window(class_name="SysListView32")
         rows = grid.item_count()
         positions = {}
         for i in range(rows):
             row_text = grid.get_item(i).get("text", "")
             if not row_text: continue
-            # 尝试解析持仓数据
+            # 灏濊瘯瑙ｆ瀽鎸佷粨鏁版嵁
             cells = row_text.split() if isinstance(row_text, str) else []
             if len(cells) >= 5:
                 code = cells[0] if len(cells) > 0 else ""
@@ -155,24 +154,23 @@ def _get_positions():
         
         return {"success": True, "positions": positions}
     except Exception as e:
-        # pywinauto不可用时返回空
-        return {"success": True, "positions": {}, "note": f"pywinauto不可用: {e}"}
+        # pywinauto涓嶅彲鐢ㄦ椂杩斿洖绌?
+        return {"success": True, "positions": {}, "note": f"pywinauto涓嶅彲鐢? {e}"}
 
 def _get_balance():
-    """获取账户资金"""
+    """鑾峰彇璐︽埛璧勯噾"""
     try:
         app, dlg = _connect()
-        # 尝试读取余额标签
-        balance_text = dlg.child_window(title_re=".*可用.*").window_text()
+        # 灏濊瘯璇诲彇浣欓鏍囩
+        balance_text = dlg.child_window(title_re=".*鍙敤.*").window_text()
         return {"success": True, "available": 0, "raw": balance_text}
-    except:
-        return {"success": True, "available": 0, "note": "需手动配置资金读取"}
+    except Exception:`r`n        return {"success": True, "available": 0, "note": "闇€鎵嬪姩閰嶇疆璧勯噾璇诲彇"}
 
 def _get_today_trades():
-    """获取当日成交"""
+    """鑾峰彇褰撴棩鎴愪氦"""
     try:
         app, dlg = _connect()
-        dlg.child_window(title="当日成交", control_type="TabItem").click() if dlg.child_window(title="当日成交", control_type="TabItem").exists() else None
+        dlg.child_window(title="褰撴棩鎴愪氦", control_type="TabItem").click() if dlg.child_window(title="褰撴棩鎴愪氦", control_type="TabItem").exists() else None
         time.sleep(1)
         grid = dlg.child_window(class_name="SysListView32")
         rows = grid.item_count()
@@ -181,12 +179,11 @@ def _get_today_trades():
             row_text = grid.get_item(i).get("text", "")
             if row_text: trades.append({"raw": row_text})
         return {"success": True, "trades": trades}
-    except:
-        return {"success": True, "trades": [], "note": "需pywinauto"}
+    except Exception:`r`n        return {"success": True, "trades": [], "note": "闇€pywinauto"}
 
 def _do_cancel(cmd):
-    """撤单"""
-    return {"success": False, "error": "撤单功能待实现"}
+    """鎾ゅ崟"""
+    return {"success": False, "error": "鎾ゅ崟鍔熻兘寰呭疄鐜?}
 
 if __name__ == "__main__":
     main()

@@ -102,7 +102,7 @@ def _calc_volume_score(kline_df, analysis):
         lu = analyze_limit_up(kline_df) if kline_df is not None else None
         if lu: score += {"A": 4, "B": 3, "C": 1, "D": -2}.get(lu["quality"], 0)
         return min(max(score, 0), 12)
-    except: return 5
+    except Exception: return 5
 
 def _calc_liquidity_score(analysis):
     mcap = analysis.get("mcap", 50); turnover = analysis.get("turnover", 1.0)

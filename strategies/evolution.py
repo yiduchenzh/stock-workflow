@@ -8,7 +8,7 @@ DATA = Path(__file__).resolve().parent.parent / "data" / "strategy_evolution.jso
 
 def _load():
     try: return json.loads(DATA.read_text()) if DATA.exists() else {}
-    except: return {}
+    except Exception: return {}
 
 def _save(d):
     DATA.parent.mkdir(parents=True, exist_ok=True)
