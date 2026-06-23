@@ -10,3 +10,12 @@ config.yaml
 *.egg-info/
 
 data/sector_cache.json
+_fix_*.py
+fix_*.py
+fix_test.py
+_verify.py
+test_*.txt
+test_write*.py
+monitor_output.txt
+review_output.txt
+test_detail.txt
