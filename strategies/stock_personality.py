@@ -3,6 +3,7 @@ import numpy as np
 import logging
 logger = logging.getLogger("aurora.personality")
 
+# utility: available for future use
 def profile_stock(code: str, name: str, kline_df) -> dict:
     """为每只股票建立股性画像"""
     if kline_df is None or len(kline_df) < 60:

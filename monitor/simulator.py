@@ -45,6 +45,7 @@ class SimAccount:
         t = {"action": "sell", "code": code, "price": price, "shares": shares, "net": round(net,2), "pnl": round(pnl,2), "reason": reason, "time": datetime.now().isoformat()}
         self.trades.append(t); self._save(); return t
 
+    # utility: available for future use
     @property
     def total_value(self):
         return self.cash + sum(p["shares"] * p.get("current_price", p["avg_cost"]) for p in self.positions.values())

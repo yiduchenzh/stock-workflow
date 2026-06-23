@@ -4,6 +4,7 @@ import logging
 logger = logging.getLogger("aurora.trailing")
 
 def calc_trailing_stop(entry_price: float, current_price: float, current_stop: float) -> float:
+    import logging; logging.getLogger(__name__).warning("[NotYetConnected] calc_trailing_stop called but not wired to pipeline")
     """计算移动止盈位"""
     profit_pct = (current_price - entry_price) / entry_price * 100
     new_stop = current_stop
@@ -16,6 +17,7 @@ def calc_trailing_stop(entry_price: float, current_price: float, current_stop: f
     return max(current_stop, new_stop)
 
 def should_scale_out(entry_price: float, current_price: float, shares: int) -> tuple:
+    import logging; logging.getLogger(__name__).warning("[NotYetConnected] should_scale_out called but not wired to pipeline")
     """分批止盈: +20%减1/3, +30%再减1/3"""
     profit_pct = (current_price - entry_price) / entry_price * 100
     if profit_pct >= 30:

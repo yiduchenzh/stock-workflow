@@ -188,7 +188,7 @@ class AuroraEngine:
     def step_risk(self):
         if not self.plans: return
         from risk.controls import check_all
-        self.plans, self.alerts = check_all(self.plans, self.positions, self.cfg)
+        self.plans, self.alerts = check_all(self.plans, self.cfg)
         self.log.info(f"[Step5] {len(self.plans)} passed, {len(self.alerts)} alerts")
 
     def step_simulate(self):

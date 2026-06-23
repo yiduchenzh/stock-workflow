@@ -4,6 +4,7 @@ import numpy as np
 import logging
 logger = logging.getLogger("aurora.portfolio_var")
 
+# utility: available for future use
 def calc_portfolio_var(positions: dict, kline_cache: dict, confidence=0.99) -> dict:
     """组合VaR = sqrt(w' * Cov * w) * z_alpha"""
     if len(positions) < 2: return {"var_pct": 0.03, "method": "single_stock"}

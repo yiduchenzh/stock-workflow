@@ -14,11 +14,13 @@ def is_trading_day(d: date = None) -> bool:
     if d.weekday() >= 5: return False
     return d.strftime("%Y-%m-%d") not in HOLIDAYS
 
+# utility: available for future use
 def is_market_open() -> bool:
     if not is_trading_day(): return False
     t = datetime.now().time()
     return (MORNING[0] <= t <= MORNING[1]) or (AFTERNOON[0] <= t <= AFTERNOON[1])
 
+# utility: available for future use
 def is_auction_time() -> bool:
     if not is_trading_day(): return False
     t = datetime.now().time()

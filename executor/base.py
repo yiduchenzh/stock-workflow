@@ -14,15 +14,16 @@ class BaseExecutor(ABC):
         self.trades = []
     
     @abstractmethod
-    def buy(self, code: str, price: float, shares: int, reason: str = "") -> dict:
+    def buy(self, _code: str, _price: float, _shares: int, _reason: str = "") -> dict:
         """买入"""
         pass
     
     @abstractmethod
-    def sell(self, code: str, price: float, shares: int, reason: str = "") -> dict:
+    def sell(self, _code: str, _price: float, _shares: int, _reason: str = "") -> dict:
         """卖出"""
         pass
     
+    # utility: available for future use
     @abstractmethod
     def sync_positions(self) -> dict:
         """同步持仓(从券商/模拟状态)"""
@@ -33,6 +34,7 @@ class BaseExecutor(ABC):
         """获取账户信息"""
         pass
     
+    # utility: available for future use
     @property
     def total_value(self) -> float:
         """总资产"""
@@ -40,12 +42,14 @@ class BaseExecutor(ABC):
                        for p in self.positions.values())
         return self.cash + pos_value
     
+    # utility: available for future use
     def cancel_all(self):
         """撤销所有未成交订单"""
         self.orders = [o for o in self.orders if o.get("status") == "filled"]
         logger.info("All pending orders cancelled")
 
 
+# utility: available for future use
 def create_executor(mode: str = "paper", capital: float = 1_000_000, config: dict = None):
     """工厂方法: 根据模式创建执行器"""
     if mode == "live":

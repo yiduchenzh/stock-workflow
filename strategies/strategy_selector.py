@@ -52,6 +52,7 @@ TRADING_STYLES = {
     },
 }
 
+# utility: available for future use
 def select_trading_style(market_regime: str, market_score: float,
                           personality: dict, sector_heat: float) -> dict:
     """根据市场+股性+板块 自动选择交易风格
@@ -105,6 +106,7 @@ def select_trading_style(market_regime: str, market_score: float,
             "reason": "默认→波段交易",
             "position_weight": 0.10}
 
+# utility: available for future use
 def filter_strategies_by_style(analysis: list, style: dict) -> list:
     """按交易风格过滤策略信号"""
     allowed = style.get("strategies", [])
@@ -121,6 +123,7 @@ def filter_strategies_by_style(analysis: list, style: dict) -> list:
     
     return filtered
 
+# utility: available for future use
 def get_style_params(style: dict) -> dict:
     """提取交易风格的止损/止盈/仓位参数"""
     return {

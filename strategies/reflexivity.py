@@ -4,7 +4,7 @@ import numpy as np
 import logging
 logger = logging.getLogger("aurora.reflex")
 
-def analyze_reflexivity(market_score: float, regime: str, breadth_data: dict = None) -> dict:
+def analyze_reflexivity(market_score: float, regime: str, _breadth_data: dict = None) -> dict:
     """反身性状态评估"""
     # 阶段识别 (简化版)
     stages = {

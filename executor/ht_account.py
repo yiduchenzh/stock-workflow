@@ -69,6 +69,7 @@ class HTBridge:
             "price": round(price, 2), "shares": int(shares / 100) * 100,
         })
     
+    # utility: available for future use
     def cancel_order(self, order_id: str) -> dict:
         """撤单"""
         return self._send_command({"action": "cancel", "order_id": order_id})
@@ -81,10 +82,12 @@ class HTBridge:
         """获取资金"""
         return self._send_command({"action": "balance"})
     
+    # utility: available for future use
     def get_today_trades(self) -> dict:
         """获取当日成交"""
         return self._send_command({"action": "today_trades"})
     
+    # utility: available for future use
     def close(self):
         self.connected = False
         logger.info("华泰桥接已断开")
@@ -149,6 +152,7 @@ class HTAccount:
             logger.info(f"[HT SELL] {code} {shares}sh @{price:.2f}")
         return result
     
+    # utility: available for future use
     def sync_positions(self) -> dict:
         self._sync()
         return dict(self.positions)
@@ -165,6 +169,7 @@ class HTAccount:
             "connected": self.connected,
         }
     
+    # utility: available for future use
     @property
     def total_value(self) -> float:
         return self.cash + sum(

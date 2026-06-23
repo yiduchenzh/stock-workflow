@@ -99,7 +99,7 @@ def _detect_divergence(df, hubs):
     return divergences
 
 # ═══ 第6层: 买卖点 ═══
-def _classify_bs_points(tops, bottoms, close, df):
+def _classify_bs_points(_tops, _bottoms, _close, df):
     """完整的三类买卖点"""
     points = []
     # Compute hubs here (cached to prevent recursion)
@@ -189,7 +189,7 @@ def interval_nesting(kline_df):
         "mid_confirmed": mid_confirmed, "precise": precise,
     }
 
-def _simulate_mid_level(df, ratio=4):
+def _simulate_mid_level(df, _ratio=4):
     """日线OHLC模拟中级别(30分钟代理)"""
     if df is None or len(df) < 20: return None
     rows = []

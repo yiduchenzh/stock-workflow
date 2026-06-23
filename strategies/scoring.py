@@ -85,7 +85,7 @@ def _make_base(a, kline_df):
         "kline_df": kline_df,
     }
 
-def _calc_volume_score(kline_df, analysis):
+def _calc_volume_score(kline_df, _analysis):
     if kline_df is None or len(kline_df) < 5: return 5
     try:
         vol = kline_df["volume"].values; close = kline_df["close"].values

@@ -2,7 +2,7 @@
 import logging
 logger = logging.getLogger("aurora.scaling")
 
-def check_add_position(pos: dict, current_price: float, kline_df=None, cfg: dict = None) -> dict:
+def check_add_position(pos: dict, current_price: float, kline_df=None) -> dict:
     """金字塔加仓条件检查 (欧奈尔+股市操练大全)
     
     条件:
@@ -77,7 +77,8 @@ def check_scale_out(pos: dict, current_price: float) -> dict:
     
     return {"should_scale": False, "reason": f"盈利{profit_pct:.1f}%,未触发止盈"}
 
-def calc_dynamic_position(capital: float, score: float, confidence: float, 
+# utility: available for future use
+def calc_dynamic_position(_capital: float, score: float, confidence: float, 
                           market_regime: str, garch_adj: float = 1.0) -> float:
     """动态仓位计算: 综合评分+置信度+市场状态+GARCH
     

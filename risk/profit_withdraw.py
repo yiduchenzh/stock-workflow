@@ -27,6 +27,7 @@ def check_withdraw(account_value: float, initial_capital: float) -> dict:
     state["prev_value"] = account_value; _save(state)
     return result
 
+# utility: available for future use
 def get_total_withdrawn() -> float:
     return _load().get("withdrawn_total", 0.0)
 

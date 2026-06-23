@@ -118,6 +118,7 @@ class SimAccount(BaseExecutor):
         logger.info(f"[SIM SELL] {code} {shares}sh @{fill_price:.2f} PnL={pnl:+.0f}")
         return {"success": True, "trade": trade}
     
+    # utility: available for future use
     def sync_positions(self) -> dict:
         """同步持仓(模拟账户直接返回)"""
         return dict(self.positions)

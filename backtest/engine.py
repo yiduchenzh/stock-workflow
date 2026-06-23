@@ -1,4 +1,4 @@
-
+﻿
 """回测引擎 — Walk-Forward + 每策略胜率 + 动态Kelly"""
 import logging, numpy as np
 import pandas as pd
@@ -34,6 +34,7 @@ class BacktestEngine:
             self.stats[n] = StrategyStats(name=n)
 
     def walk_forward(self, codes: list, train_days=200, test_days=50, windows=3) -> dict:
+        import logging; logging.getLogger(__name__).warning("[NotYetConnected] walk_forward called but not wired to pipeline")
         """Walk-Forward验证: 滚动窗口, 样本外测试"""
         from data.sources import get_kline
         all_results = {}
@@ -56,6 +57,7 @@ class BacktestEngine:
             all_results[code] = results
         return all_results
 
+    # utility: available for future use
     def update_stats(self, strategy_name: str, pnl_pct: float, is_win: bool):
         """更新策略统计 — 每笔交易后调用"""
         s = self.stats.get(strategy_name)
@@ -84,6 +86,7 @@ class BacktestEngine:
         kelly = max(0.01, (p * rr - (1 - p)) / rr)
         return min(kelly * s.weight, 0.25)
 
+    # utility: available for future use
     def get_active_strategies(self) -> list:
         return [n for n, s in self.stats.items() if s.active]
 

@@ -53,6 +53,7 @@ def _find_swings(close, min_bars=8):
     return filtered
 
 def elliott_score(kline_df) -> float:
+    import logging; logging.getLogger(__name__).warning("[NotYetConnected] elliott_score called but not wired to pipeline")
     result = detect_impulse_wave(kline_df)
     if not result["wave_detected"]: return 0
     if result["current_wave"] in ("wave3", "wave5"):

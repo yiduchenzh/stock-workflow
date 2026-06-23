@@ -12,7 +12,7 @@ def _save(s):
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(s, indent=2))
 
-def check_all(plans: list, positions: dict, cfg: dict) -> tuple:
+def check_all(plans: list, cfg: dict) -> tuple:
     state = _load()
     state.setdefault("breaker", False); state.setdefault("consec", 0)
     state.setdefault("daily_pnl", 0.0); state.setdefault("peak_value", 0.0)

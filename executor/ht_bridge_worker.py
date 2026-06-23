@@ -1,4 +1,4 @@
-﻿"""鍗庢嘲妗ユ帴Worker 鈥?32浣峆ython鎿嶆帶xiadan.exe (subprocess JSON閫氫俊)"""
+"""鍗庢嘲妗ユ帴Worker 鈥?32浣峆ython鎿嶆帶xiadan.exe (subprocess JSON閫氫俊)"""
 import json, sys, time, logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [HT] %(message)s")
 logger = logging.getLogger("ht_worker")
@@ -28,7 +28,7 @@ def main():
         elif action == "today_trades":
             result = _get_today_trades()
         elif action == "cancel":
-            result = _do_cancel(cmd)
+            result = _do_cancel()
         else:
             result = {"success": False, "error": f"Unknown action: {action}"}
     except Exception as e:
@@ -181,7 +181,7 @@ def _get_today_trades():
         return {"success": True, "trades": trades}
     except Exception:`r`n        return {"success": True, "trades": [], "note": "闇€pywinauto"}
 
-def _do_cancel(cmd):
+def _do_cancel():
     """鎾ゅ崟"""
     return {"success": False, "error": "鎾ゅ崟鍔熻兘寰呭疄鐜?}
 

@@ -4,6 +4,7 @@ import logging
 logger = logging.getLogger("aurora.t0")
 
 def run_t0_analysis(positions: dict, kline_cache: dict, cfg: dict) -> list:
+    import logging; logging.getLogger(__name__).warning("[NotYetConnected] run_t0_analysis called but not wired to pipeline")
     """对所有持仓运行T+0分析, 返回可执行计划"""
     if not positions: return []
     t0_cfg = cfg.get("intraday_t0", {})
@@ -72,7 +73,7 @@ def _t0_vwap_reversion(kline, price):
     return None
 
 # ═══ 策略2: 网格做T ═══
-def _t0_grid(kline, price, cost):
+def _t0_grid(_kline, price, cost):
     """围绕成本价的网格: 低于成本→买入, 高于成本+2%→卖出"""
     profit_pct = (price - cost) / cost * 100 if cost > 0 else 0
     # 低于成本→先买后卖
@@ -109,7 +110,7 @@ def _t0_momentum(kline, price):
     return None
 
 # ═══ 策略4: 均值回归 ═══
-def _t0_mean_reversion(kline, price, cost):
+def _t0_mean_reversion(kline, price, _cost):
     """RSI超卖→反弹回归均值"""
     if len(kline) < 14: return None
     close = kline["close"].values

@@ -13,6 +13,7 @@ def record_entry(plan: dict):
               "planned": True})
     _save_journal(j)
 
+# utility: available for future use
 def record_exit(code: str, pnl_pct: float, reason: str, planned: bool = True):
     j = _load_journal()
     j.append({"time": datetime.now().isoformat(), "action": "exit",
