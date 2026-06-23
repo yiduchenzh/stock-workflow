@@ -1,5 +1,5 @@
 
-"""Aurora Trading Engine v3.0 — 90分目标 · 回测驱动+多信号+自适应+自进化"""
+"""Aurora Trading Engine v3.0 �?90分目�?· 回测驱动+多信�?自适应+自进�?""
 from __future__ import annotations
 import logging, sys, time, yaml, os as _os
 from pathlib import Path
@@ -32,13 +32,13 @@ class AuroraEngine:
             ("step_market", "市场体检(6维度)"),
             ("step_cascade", "三级联动(大盘→板块→个股)"),
             ("step_screen", "CAN SLIM选股"),
-            ("step_analyze", "7战法(多信号确认+量价验证)"),
+            ("step_analyze", "7战法(多信号确�?量价验证)"),
             ("step_score", "综合评分(动态Kelly+regime)"),
             ("step_position", "仓位计划(真实Kelly+自适应)"),
             ("step_risk", "风控(VaR+压力测试)"),
-            ("step_simulate", "模拟交易(含移动止盈)"),
+            ("step_simulate", "模拟交易(含移动止�?"),
             ("step_monitor", "实时监控"),
-            ("step_evaluate", "策略评估(自进化统计)"),
+            ("step_evaluate", "策略评估(自进化统�?"),
             ("step_review", "复盘(行为偏误)"),
             ("step_prep", "次日准备"),
         ]
@@ -49,7 +49,7 @@ class AuroraEngine:
                 self.log.info(f"  {label} OK")
             except Exception as e:
                 self.log.error(f"  {label} FAIL: {e}")
-        self.log.info(f"Done — {time.time()-t0:.1f}s")
+        self.log.info(f"Done �?{time.time()-t0:.1f}s")
         self._push_summary()
 
     def step_market(self):
@@ -75,7 +75,7 @@ class AuroraEngine:
         from data.northbound import get_northbound_flow
         nb = get_northbound_flow()
         self.northbound = nb
-        self.log.info(f"[Step0] 北向: {nb["signal"]} (累计{nb["cumulative_yi"]:.0f}亿)")
+        self.log.info(f"[Step0] 北向: {nb["signal"]} (累计{nb["cumulative_yi"]:.0f}�?")
 
     def step_cascade(self):
         if self.market_score < 40:
@@ -90,7 +90,7 @@ class AuroraEngine:
             c["sector_heat"] = sectors.get(c.get("industry", ""), 0)
         self.candidates.sort(key=lambda x: x.get("sector_heat", 0), reverse=True)
         self.log.info(f"[Cascade] {len(self.candidates)} candidates")
-        # 强势股筛选: 板块轮动+资金流向+RS排名+涨停基因
+        # 强势股筛�? 板块轮动+资金流向+RS排名+涨停基因
         if self.candidates:
             from screening.strong_stock import screen_strong_stocks
             from data.sources import get_top_sectors, get_top_flow_stocks
@@ -99,12 +99,12 @@ class AuroraEngine:
             self.candidates = screen_strong_stocks(self.candidates, 
                 getattr(self, "northbound", None),
                 top_sectors=top_sectors, flow_stocks=flow_stocks)
-            self.log.info(f"[Strong] 强势股: {len(self.candidates)}只 (板块+RS+资金+基因)")
-        # 集合竞价筛选
+            self.log.info(f"[Strong] 强势�? {len(self.candidates)}�?(板块+RS+资金+基因)")
+        # 集合竞价筛�?
         from screening.auction import auction_screen
         if self.candidates:
             self.candidates = auction_screen(self.candidates, top_n=10)
-            self.log.info(f"[Auction] CC筛选后: {len(self.candidates)}只")
+            self.log.info(f"[Auction] CC筛选后: {len(self.candidates)}�?)
 
     def step_screen(self):
         if not self.candidates: return
@@ -119,7 +119,7 @@ class AuroraEngine:
         from strategies.regime import filter_strategies_by_regime
         from strategies.confirmation import confirm_entry
         self.analysis = analyze_all(candidates)
-        # 多信号确认过滤
+        # 多信号确认过�?
         confirmed = []
         for a in self.analysis:
             if not a.get("signal"): continue
@@ -132,7 +132,7 @@ class AuroraEngine:
             else:
                 from strategies.evolution import record_signal
                 record_signal(a.get("best_strategy","?"), a.get("best_score",0))
-        # 按市场状态过滤策略
+        # 按市场状态过滤策�?
         active_strats = filter_strategies_by_regime(self.market_regime,
             [a.get("best_strategy","") for a in confirmed])
         self.analysis = [a for a in confirmed if a.get("best_strategy","") in active_strats]
@@ -149,12 +149,6 @@ class AuroraEngine:
         from risk.position import plan_positions
         from backtest.engine import get_backtest_engine
         bt = get_backtest_engine()
-        # Phase 1a: Seed Kelly with walk-forward backtest results
-        codes = [s.get("code","") for s in (self.scores or [])[:5] if s.get("code")]
-        if codes:
-            wf = bt.walk_forward(codes, train_days=150, test_days=40, windows=2)
-            for code, params in wf.items():
-                self.log.info(f"[WF] {code}: kelly={params.get('kelly',0.08):.2f} wr={params.get('win_rate',0):.0%}")
         self.plans = plan_positions(self.scores, self.capital, self.cfg, bt)
         # v9: filter paused stocks
         if self.paused_stocks:
@@ -175,21 +169,21 @@ class AuroraEngine:
         if self.plans:
             self.last_trade_date = today
         self.log.info(f"[Step4] {len(self.plans)} plans (Kelly adapted)")
-        # 原则3: 加仓只做盈利股 — 亏损仓位不追加
+        # 原则3: 加仓只做盈利�?�?亏损仓位不追�?
         from risk.position_scaling import check_add_position
         for code, pos in self.account.positions.items() if hasattr(self, 'account') and self.account else []:
             if hasattr(self, 'account') and self.account:
                 cur = pos.get("current_price", pos.get("avg_cost", 0))
                 add = check_add_position(pos, cur)
                 if add["should_add"]:
-                    # 找到该股的plan并增加仓位
+                    # 找到该股的plan并增加仓�?
                     for p in self.plans:
                         if p.get("code") == code:
                             p["shares"] += add.get("shares", 0)
                             p["weight"] = round((p["shares"] * p["entry_price"]) / self.capital, 3)
                             self.log.info(f"  [Add] {code}: {add['reason']}")
                 elif add.get("reason","").startswith("盈利不足"):
-                    pass  # 正常: 不摊平亏损
+                    pass  # 正常: 不摊平亏�?
 
     def step_risk(self):
         if not self.plans: return
@@ -205,12 +199,9 @@ class AuroraEngine:
             acc.buy(p["code"], p["entry_price"], p["shares"], p.get("strategy", ""))
         self.account = acc
         # 记录交易到自进化引擎
-        from backtest.engine import get_backtest_engine
         from strategies.evolution import record_trade_result
         for p in self.plans:
-            record_trade_result(p.get("strategy","?"), 0, True)  # 开仓记录
-            bt = get_backtest_engine()
-            bt.update_stats(p.get("strategy","?"), 0, True)  # Feed live trade to Kelly
+            record_trade_result(p.get("strategy","?"), 0, True)  # 开仓记�?
         from strategies.behavior import record_entry
         for p in self.plans:
             record_entry(p)
@@ -219,7 +210,7 @@ class AuroraEngine:
             wd = check_withdraw(acc.total_value, self.capital)
             if wd["should_withdraw"]:
                 self.log.warning(f"[Withdraw] {wd["reason"]}")
-        # 仓位缩放检查: 金字塔加仓+分批止盈
+        # 仓位缩放检�? 金字塔加�?分批止盈
         from risk.position_scaling import check_add_position, check_scale_out
         for code, pos in acc.positions.items():
             cur = pos.get("current_price", pos.get("avg_cost", 0))
@@ -235,9 +226,9 @@ class AuroraEngine:
         from monitor.watcher import watch_positions
         alerts = watch_positions(self.positions, self.cfg)
         self.alerts.extend(alerts)
-        # 盘中突发检查
+        # 盘中突发检�?
         from monitor.contingency import check_contingency
-        market_status = {"index_change": 0}  # 简化: 日线级别无法获取盘中大盘涨跌
+        market_status = {"index_change": 0}  # 简�? 日线级别无法获取盘中大盘涨跌
         kline_cache = {}
         for code in self.positions:
             from data.sources import get_kline
@@ -248,18 +239,6 @@ class AuroraEngine:
             self.alerts.extend(contingency_alerts)
             for ca in contingency_alerts:
                 self.log.warning(f"  [ALERT] {ca['type']}: {ca['code']} {ca['reason']}")
-        # Phase 1b: Act on watcher alerts (trailing stop, scale-out)
-        for a in alerts:
-            if a.get("type") == "breach_stop":
-                self.log.warning(f"  [SELL] {a['code']}: 触发移动止盈@{a.get('price',0):.2f}, 盈利{a.get('profit_pct',0):+.1f}%")
-            elif a.get("type") == "scale_out":
-                self.log.info(f"  [SELL] {a['code']}: 分批止盈, 减{a.get('shares',0)}股@{a.get('price',0):.2f}")
-            elif a.get("type") == "trailing_stop":
-                self.log.info(f"  [STOP] {a['code']}: 移动止盈提升至{a.get('stop',0):.2f} (盈利{a.get('profit_pct',0):+.1f}%)")
-            elif a.get("type") == "stop_loss":
-                self.log.warning(f"  [STOP] {a['code']}: 触发止损@{a.get('price',0):.2f}")
-            elif a.get("type") == "take_profit":
-                self.log.info(f"  [SELL] {a['code']}: 触发止盈@{a.get('price',0):.2f}")
 
     def step_evaluate(self):
         from backtest.engine import get_backtest_engine

@@ -1,4 +1,14 @@
-"""持仓监控 — 止损止盈+移动止盈+分批止盈"""
+﻿import sys
+# Read the old watcher.py
+path = r'D:\Hermes Agent CN Desktop\stock-workflow\monitor\watcher.py'
+content = open(path, 'r', encoding='utf-8').read()
+print(f'Read {len(content)} bytes')
+if 'calc_trailing_stop' in content:
+    print('Already updated, skipping')
+    sys.exit(0)
+
+# New watcher.py content
+new_content = '''"""\u6301\u4ed3\u76d1\u63a7 \u2014 \u6b62\u635f\u6b62\u76c8+\u79fb\u52a8\u6b62\u76c8+\u5206\u6279\u6b62\u76c8"""
 import json, logging
 from pathlib import Path
 from data.sources import get_tencent_quotes
@@ -72,3 +82,8 @@ def watch_positions(positions: dict, cfg: dict) -> list:
             logger.info(f"  [ScaleOut] {code}: sell {scale_shares} shares (profit {profit_pct:.1f}%)")
 
     return alerts
+'''
+
+with open(path, 'w', encoding='utf-8') as f:
+    f.write(new_content)
+print(f'Wrote {len(new_content)} bytes to watcher.py')
