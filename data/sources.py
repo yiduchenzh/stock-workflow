@@ -1,6 +1,7 @@
-﻿
-"""鏁版嵁婧?鈥?鑵捐璐㈢粡(涓诲姏) + 涓滆储(杈呭姪), 涓夌骇闄嶇骇"""
+
+"""数据源 — 腾讯财经(主力) + 东财(辅助), 三级降级"""
 import urllib.request, json, time, logging
+from pathlib import Path
 import pandas as pd
 
 logger = logging.getLogger("aurora.data")
@@ -10,7 +11,7 @@ def _prefix(code):
     return f"sh{code}" if code.startswith(("6","9")) else f"sz{code}"
 
 def get_tencent_quotes(codes: list) -> dict:
-    """鑵捐鎵归噺琛屾儏 鈥?涓嶅皝IP, 涓诲姏鏁版嵁婧?""
+    """腾讯批量行情 — 不封IP, 主力数据源"""
     if not codes: return {}
     prefixed = [_prefix(c) for c in codes[:80]]
     url = "https://qt.gtimg.cn/q=" + ",".join(prefixed)
@@ -18,7 +19,7 @@ def get_tencent_quotes(codes: list) -> dict:
     try:
         data = urllib.request.urlopen(req, timeout=10).read().decode("gbk", errors="replace")
     except Exception as e:
-        logger.warning(f"鑵捐琛屾儏澶辫触: {e}")
+        logger.warning(f"腾讯行情失败: {e}")
         return {}
     result = {}
     for line in data.strip().split(";"):
@@ -93,7 +94,20 @@ def get_real_stock_list() -> list:
                 codes.extend(chunk)
                 if len(items) < 100: break
             except Exception as e:
-                logger.warning(f'EM p{pn} fail({e})')
+                logger.warning(f'EM p{pn} fail({e}), retry once')
+                import time as _t
+                _t.sleep(2.0)
+                try:
+                    r2 = req.get(url, params={'pn': pn, 'pz': 100, 'po': 1, 'np': 1, 'fltt': 2, 'invt': 2, 'fs': fs, 'fields': 'f12'},
+                               headers={'User-Agent': UA, 'Referer': 'https://quote.eastmoney.com/'}, timeout=10)
+                    items2 = r2.json().get('data', {}).get('diff', []) or []
+                    chunk = [it['f12'] for it in items2 if len(str(it.get('f12',''))) == 6]
+                    if chunk:
+                        codes.extend(chunk)
+                        if len(items2) < 100: break
+                        continue
+                except: pass
+                logger.warning(f'EM p{pn} retry also failed')
                 break
     if codes:
         result = list(dict.fromkeys(codes))
@@ -103,11 +117,11 @@ def get_real_stock_list() -> list:
     return _sina_stock_list()
 
 def get_index_snapshot(codes: list) -> dict:
-    """鑾峰彇鎸囨暟蹇収"""
+    """获取指数快照"""
     return get_tencent_quotes(codes)
 
 def get_market_breadth() -> dict:
-    """甯傚満骞垮害: 娑ㄨ穼姣?""
+    """市场广度: 涨跌比"""
     try:
         quotes = get_tencent_quotes(get_real_stock_list()[:200])
         if not quotes: return {"ad_score": 0, "up_count": 0, "down_count": 0}
@@ -121,7 +135,7 @@ def get_market_breadth() -> dict:
         return {"ad_score": 0, "up_count": 0, "down_count": 0}
 
 def get_kline(code: str, days: int = 250) -> pd.DataFrame:
-    """鑾峰彇鍘嗗彶K绾?鑵捐鏃)"""
+    """获取历史K线(腾讯日K)"""
     import requests
     pfx = _prefix(code)
     url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={pfx},day,,,{days},qfq"
@@ -134,11 +148,30 @@ def get_kline(code: str, days: int = 250) -> pd.DataFrame:
             rows.append({"date": d[0], "open": float(d[1]), "close": float(d[2]), "high": float(d[3]), "low": float(d[4]), "volume": float(d[5])})
         return pd.DataFrame(rows)
     except Exception as e:
-        logger.warning(f"K绾胯幏鍙栧け璐?{code}: {e}")
+        logger.warning(f"K线获取失败 {code}: {e}")
         return pd.DataFrame()
 
+SECTOR_CACHE = Path(__file__).resolve().parent.parent / "data" / "sector_cache.json"
+
+def _save_sector_cache(sectors):
+    try:
+        SECTOR_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        import json as _j
+        _j.dump({"sectors": sectors[:30]}, open(SECTOR_CACHE, "w", encoding="utf-8"))
+    except Exception:
+        pass
+
+def _load_sector_cache():
+    try:
+        if SECTOR_CACHE.exists():
+            import json as _j
+            return _j.load(open(SECTOR_CACHE, encoding="utf-8")).get("sectors", [])
+    except Exception:
+        pass
+    return []
+
 def get_sector_ranking(top_n: int = 50) -> list:
-    """涓滆储琛屼笟鏉垮潡鎺掑悕"""
+    """东财行业板块排名"""
     import requests
     try:
         url = "https://push2.eastmoney.com/api/qt/clist/get"
@@ -146,9 +179,20 @@ def get_sector_ranking(top_n: int = 50) -> list:
         time.sleep(1.2)
         r = requests.get(url, params=params, headers={"User-Agent": UA, "Referer": "https://quote.eastmoney.com/"}, timeout=15)
         items = r.json().get("data",{}).get("diff",[]) or []
-        return [{"name": it.get("f14",""), "code": it.get("f12",""), "change_pct": it.get("f3",0), "up": it.get("f104",0), "down": it.get("f105",0), "leader": it.get("f128","")} for it in items]
+        result = [{"name": it.get("f14",""), "code": it.get("f12",""), "change_pct": it.get("f3",0), "up": it.get("f104",0), "down": it.get("f105",0), "leader": it.get("f128","")} for it in items]
+        if result:
+            _save_sector_cache(result)
+            return result
+        cached = _load_sector_cache()
+        if cached:
+            logger.info(f"[Sector] Using cached ({len(cached)} sectors)")
+            return cached
     except Exception as e:
-        logger.warning(f"鏉垮潡鏁版嵁澶辫触: {e}")
+        logger.warning(f"板块数据失败: {e}")
+        cached = _load_sector_cache()
+        if cached:
+            logger.info(f"[Sector] Using cached ({len(cached)} sectors)")
+            return cached
         return []
 def get_top_flow_stocks(top_n=200):
     import requests as req
@@ -176,4 +220,3 @@ def get_top_sectors(top_n=5):
     top = [s['name'] for s in sectors[:top_n] if s.get('name')]
     logger.info(f'[Sector] Top {top_n}: {top}')
     return top
-
