@@ -19,6 +19,10 @@ class AuroraEngine:
         self.capital = self.cfg.get("risk", {}).get("capital", 1_000_000)
         self.market_score = 50; self.market_regime = "range"
         self.positions = {}; self.plans = []; self.alerts = []; self.log = logger
+        # v9 self-evolution: stock circuit breaker + throttle
+        self.stock_losses: dict = {}
+        self.paused_stocks: set = set()
+        self.last_trade_date: str = ""
 
     def run(self):
         if not is_trading_day():
@@ -142,7 +146,25 @@ class AuroraEngine:
         from backtest.engine import get_backtest_engine
         bt = get_backtest_engine()
         self.plans = plan_positions(self.scores, self.capital, self.cfg, bt)
-        self.log.info(f"[Step4] {len(self.plans)} plans (Kelly adapted)")
+        # v9: filter paused stocks
+        if self.paused_stocks:
+            before = len(self.plans)
+            self.plans = [p for p in self.plans if p.get("code") not in self.paused_stocks]
+            if before - len(self.plans):
+                self.log.warning(f"[Fuse] filtered {before-len(self.plans)} paused stocks: {self.paused_stocks}")
+        # v9: market interval throttle
+        today = datetime.now().strftime("%Y-%m-%d")
+        min_interval = 5 if self.market_score >= 50 else 10
+        if self.last_trade_date:
+            from datetime import timedelta
+            last = datetime.strptime(self.last_trade_date, "%Y-%m-%d")
+            if (datetime.now() - last).days < min_interval:
+                self.log.info(f"[Fuse] throttle: {(datetime.now()-last).days}d<{min_interval}d, skip")
+                self.plans = []
+                return
+        if self.plans:
+            self.last_trade_date = today
+                self.log.info(f"[Step4] {len(self.plans)} plans (Kelly adapted)")
         # 原则3: 加仓只做盈利股 — 亏损仓位不追加
         from risk.position_scaling import check_add_position
         for code, pos in self.account.positions.items() if hasattr(self, 'account') and self.account else []:

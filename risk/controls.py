@@ -25,7 +25,9 @@ def check_all(plans: list, positions: dict, cfg: dict) -> tuple:
     alerts = []
     # 连续亏损
     if state.get("consec", 0) >= max_consec:
-        return [], [{"type": "consec", "msg": f"连续{state['consec']}次亏损,暂停"}]
+        state["breaker"] = True
+        _save(state)
+        return [], [{"type": "consec", "msg": f"连续{state['consec']}次亏损,触发熔断"}]
     # 仓位上限
     filtered = plans[:max_pos]
     if len(plans) > max_pos:
