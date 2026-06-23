@@ -26,6 +26,9 @@ def cascade_screen(cfg: dict) -> list:
         if turnover < coarse.get("min_turnover", 1.0): continue
         if vr < coarse.get("min_vol_ratio", 0.8): continue
         if coarse.get("exclude_st", True) and "ST" in name: continue
+        max_p = coarse.get("max_price", 0)
+        price = q.get("price", 0)
+        if max_p > 0 and price > max_p: continue
         candidates.append(q)
     # Sort by vol_ratio (liquidity proxy)
     candidates.sort(key=lambda x: x.get("vol_ratio", 0), reverse=True)
