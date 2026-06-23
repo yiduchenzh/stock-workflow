@@ -215,7 +215,17 @@ def get_top_flow_stocks(top_n=200):
 def get_top_sectors(top_n=5):
     sectors = get_sector_ranking(100)
     if not sectors:
-        return []
+        fb = ["化学制药","生物制品","医疗服务","医药生物","中药II",
+              "半导体","分立器件","集成电路设计","芯片",
+              "软件服务","IT服务","人工智能","大数据",
+              "汽车整车","汽车零部件","新能源汽车",
+              "银行","证券","保险",
+              "食品饮料","白酒","家电",
+              "国防军工","航空航天装备",
+              "电力设备","光伏设备","储能"]
+        top = fb[:top_n]
+        logger.info(f"[Sector] Hardcoded fallback top {top_n}: {top}")
+        return top
     sectors.sort(key=lambda s: s.get('change_pct', 0), reverse=True)
     top = [s['name'] for s in sectors[:top_n] if s.get('name')]
     logger.info(f'[Sector] Top {top_n}: {top}')
