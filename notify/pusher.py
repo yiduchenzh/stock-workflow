@@ -7,6 +7,10 @@ logger = logging.getLogger("aurora.push")
 def push_auction_results(engine):
     candidates = getattr(engine, "candidates", [])
     screened = getattr(engine, "screened", [])
+    # 跳过空推送: 无候选且市场偏弱时无用
+    if not candidates and not screened and engine.market_score < 50:
+        logger.info("[Push] 竞价: 无候选,跳过")
+        return
     title = f"🔍 Aurora 竞价选股 {datetime.now():%m-%d %H:%M}"
     desc = f"市场: {engine.market_regime} ({engine.market_score:.0f}/100)\n候选: {len(candidates)}只\nCAN SLIM通过: {len(screened)}只\n"
     if screened:
@@ -19,7 +23,9 @@ def push_trade_signal(engine):
     plans = getattr(engine, "plans", [])
     alerts = getattr(engine, "alerts", [])
     t0 = getattr(engine, "t0_plans", [])
-    if not plans and not alerts and not t0: return
+    if not plans and not alerts and not t0:
+        logger.info("[Push] 信号: 无计划无告警,跳过")
+        return
     title = f"📈 Aurora 交易信号 {datetime.now():%H:%M}"
     desc = ""
     if plans:
@@ -40,6 +46,10 @@ def push_daily_review(engine):
     plans = getattr(engine, "plans", [])
     alerts = getattr(engine, "alerts", [])
     account = getattr(engine, "account", None)
+    # 跳过空推送: 无交易无告警时无用
+    if not plans and not alerts and engine.market_score < 50:
+        logger.info("[Push] 复盘: 无交易,跳过")
+        return
     title = f"📋 Aurora 复盘 {datetime.now():%m-%d}"
     desc = f"市场: {engine.market_regime} ({engine.market_score:.0f}/100)\n今日交易: {len(plans)}笔\n告警: {len(alerts)}条\n"
     if account:
@@ -58,6 +68,10 @@ def push_daily_review(engine):
     _send(title, desc, engine)
 
 def push_morning_report(engine):
+    # 跳过空晨报: 市场评分极低时数据不可靠
+    if engine.market_score < 20:
+        logger.info(f"[Push] 晨报: 市场{engine.market_score}<20,跳过")
+        return
     candidates = getattr(engine, "candidates", [])
     screened = getattr(engine, "screened", [])
     title = "Aurora晨报 " + datetime.now().strftime("%m-%d %H:%M")
