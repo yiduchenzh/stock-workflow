@@ -164,7 +164,7 @@ class AuroraEngine:
                 return
         if self.plans:
             self.last_trade_date = today
-                self.log.info(f"[Step4] {len(self.plans)} plans (Kelly adapted)")
+        self.log.info(f"[Step4] {len(self.plans)} plans (Kelly adapted)")
         # 原则3: 加仓只做盈利股 — 亏损仓位不追加
         from risk.position_scaling import check_add_position
         for code, pos in self.account.positions.items() if hasattr(self, 'account') and self.account else []:
