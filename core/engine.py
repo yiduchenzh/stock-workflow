@@ -256,12 +256,13 @@ class AuroraEngine:
         # 盘中突发检查
         from monitor.contingency import check_contingency
         # 盘中大盘实时涨跌
+        from data.sources import get_index_snapshot
         idx_data = get_index_snapshot(["000001"])
         idx_chg = idx_data.get("000001", {}).get("change_pct", 0) if idx_data else 0
         market_status = {"index_change": idx_chg}
         kline_cache = {}
         for code in self.positions:
-            from data.sources import get_kline, get_index_snapshot
+            from data.sources import get_kline
             df = get_kline(code, 30)
             if not df.empty: kline_cache[code] = df
         contingency_alerts = check_contingency(self.positions, market_status, kline_cache)
