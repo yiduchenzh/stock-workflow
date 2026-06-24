@@ -1,6 +1,7 @@
 
 """多周期共振 v2.0 — 真实周线/日线/60分K线 · Elder+Murphy"""
 import numpy as np
+import pandas as pd
 import logging
 logger = logging.getLogger("aurora.mtf")
 
@@ -97,7 +98,6 @@ def _score_weekly(wk_df):
     if close[-1] > ma20: score += 10
     return min(score, 65)
 
-import pandas as pd
 def _ema(data, period):
     alpha = 2 / (period + 1)
     result = [data[0]]

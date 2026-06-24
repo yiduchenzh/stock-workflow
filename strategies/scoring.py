@@ -89,7 +89,7 @@ def _calc_volume_score(kline_df, _analysis):
     if kline_df is None or len(kline_df) < 5: return 5
     try:
         vol = kline_df["volume"].values; close = kline_df["close"].values
-        vol_ratio = vol[-1] / (vol[-20:].mean() or 1)
+        vol_ratio = vol[-1] / (np.mean(vol[-20:]) or 1)
         price_up = close[-1] > close[-5] if len(close) >= 5 else True
         vol_up = vol[-1] > vol[-5] if len(vol) >= 5 else True
         score = 5

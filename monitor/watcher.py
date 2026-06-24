@@ -1,11 +1,10 @@
-"""持仓监控 — 止损止盈+移动止盈+分批止盈"""
+"""持仓监控 — 止损止盈+移动止盈+分批止盈 (使用executor版SimAccount)"""
 import json, logging
 from pathlib import Path
 from data.sources import get_tencent_quotes
 from risk.trailing import calc_trailing_stop, should_scale_out
 logger = logging.getLogger("aurora.watch")
 
-# Module-level trailing stop tracking (persisted across watch_positions calls)
 _trailing_stops: dict[str, float] = {}
 
 def watch_positions(positions: dict, cfg: dict) -> list:
@@ -19,19 +18,16 @@ def watch_positions(positions: dict, cfg: dict) -> list:
         cur = q.get("price", pos.get("current_price", pos.get("avg_cost", 0)))
         entry = pos.get("avg_cost", cur)
 
-        # --- 1. Hard stop loss (most critical) ---
         sl = pos.get("stop_loss", entry * (1 - risk_cfg.get("stop_loss", {}).get("hard_pct", 5.0) / 100))
         if cur <= sl:
             alerts.append({"type": "stop_loss", "code": code, "price": cur, "stop": sl})
             _trailing_stops.pop(code, None)
             continue
 
-        # --- 2. Take profit (full exit target) ---
         tp = pos.get("take_profit", entry * 1.10)
         if cur >= tp:
             alerts.append({"type": "take_profit", "code": code, "price": cur, "target": tp})
 
-        # --- 3. Trailing stop logic (calc_trailing_stop handles 5%/10%/20% tiers) ---
         profit_pct = (cur - entry) / entry * 100
         current_ts = _trailing_stops.get(code, 0.0)
         new_ts = calc_trailing_stop(entry, cur, current_ts)
@@ -39,36 +35,19 @@ def watch_positions(positions: dict, cfg: dict) -> list:
         if new_ts > current_ts and new_ts > 0:
             _trailing_stops[code] = new_ts
             alerts.append({
-                "type": "trailing_stop",
-                "code": code,
-                "price": cur,
-                "trailing_stop": round(new_ts, 4),
+                "type": "trailing_stop", "code": code,
+                "price": cur, "trailing_stop": round(new_ts, 4),
                 "profit_pct": round(profit_pct, 2)
             })
             logger.info(f"  [Trailing] {code}: stop raised to {new_ts:.4f} (profit {profit_pct:.1f}%)")
 
-        # --- 4. Check breach of trailing stop ---
         if current_ts > 0 and cur <= current_ts:
             alerts.append({
-                "type": "breach_stop",
-                "code": code,
-                "price": cur,
-                "trailing_stop": round(current_ts, 4),
+                "type": "breach_stop", "code": code,
+                "price": cur, "trailing_stop": round(current_ts, 4),
                 "profit_pct": round(profit_pct, 2)
             })
             logger.warning(f"  [Breach] {code}: price {cur:.4f} hit trailing stop {current_ts:.4f}")
             _trailing_stops.pop(code, None)
-
-        # --- 5. Scale-out suggestion ---
-        scale_should, scale_shares = should_scale_out(entry, cur, pos.get("shares", 0))
-        if scale_should:
-            alerts.append({
-                "type": "scale_out",
-                "code": code,
-                "price": cur,
-                "shares_to_sell": scale_shares,
-                "profit_pct": round(profit_pct, 2)
-            })
-            logger.info(f"  [ScaleOut] {code}: sell {scale_shares} shares (profit {profit_pct:.1f}%)")
 
     return alerts

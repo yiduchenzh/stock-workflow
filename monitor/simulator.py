@@ -10,7 +10,7 @@ TRADES = DATA / "sim_trades.json"
 COMM = 0.0003; STAMP = 0.001; SLIP = 0.001
 
 class SimAccount:
-    def __init__(self, capital=1_000_000):
+    def __init__(self, capital=1_000_000, cfg=None):  # cfg参数兼容engine.py调用
         self.capital = capital; self.cash = capital
         self.positions = {}; self.trades = []
         self._load()

@@ -205,6 +205,7 @@ class AuroraEngine:
         for p in self.plans:
             acc.buy(p["code"], p["entry_price"], p["shares"], p.get("strategy", ""))
         self.account = acc
+        self.positions = acc.positions  # 同步持仓到引擎监控管线
         # 记录交易到自进化引擎
         from backtest.engine import get_backtest_engine
         from strategies.evolution import record_trade_result
@@ -238,10 +239,13 @@ class AuroraEngine:
         self.alerts.extend(alerts)
         # 盘中突发检查
         from monitor.contingency import check_contingency
-        market_status = {"index_change": 0}  # 简化: 日线级别无法获取盘中大盘涨跌
+        # 盘中大盘实时涨跌
+        idx_data = get_index_snapshot(["000001"])
+        idx_chg = idx_data.get("000001", {}).get("change_pct", 0) if idx_data else 0
+        market_status = {"index_change": idx_chg}
         kline_cache = {}
         for code in self.positions:
-            from data.sources import get_kline
+            from data.sources import get_kline, get_index_snapshot
             df = get_kline(code, 30)
             if not df.empty: kline_cache[code] = df
         contingency_alerts = check_contingency(self.positions, market_status, kline_cache)
@@ -341,17 +345,20 @@ class AuroraEngine:
                                       "reason": f"regime={self.market_regime}上限{max_pos}仓,超{extra}仓"})
                     self.log.warning(f"  [Rebalance SELL] {code}: {sell_list[-1]['reason']}")
         
-        # C: 执行卖出 (模拟账户操作)
-        for s in sell_list:
+        # C: 执行卖出 (使用已有模拟账户)
+        acc = getattr(self, 'account', None)
+        if acc is None:
             from monitor.simulator import SimAccount
-            acc = SimAccount(self.capital, self.cfg)
+            acc = SimAccount(self.capital)
+            self.account = acc
+        for s in sell_list:
             result = acc.sell(s["code"], s["price"], s["shares"], s["reason"])
-            if result and result.get("success"):
+            if result is not None:
                 self.alerts.append({"type": "rebalance", "code": s["code"],
                                     "msg": s["reason"], "shares": s["shares"]})
                 self.log.info(f"  [Sell] {s['code']} {s['shares']}sh @{s['price']:.2f} {s['reason']}")
             else:
-                self.log.warning(f"  [Sell FAIL] {s['code']}: {result}")
+                self.log.warning(f"  [Sell FAIL] {s['code']}: 卖出失败")
 
     def step_evaluate(self):
         from backtest.engine import get_backtest_engine

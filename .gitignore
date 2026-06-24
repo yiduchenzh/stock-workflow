@@ -38,3 +38,8 @@ run_audit.py
 test_div*.py
 write_*.py
 data/backtest*.json
+.env
+bt_*.py
+data/bt_*.json
+_data_*/
+data/wf_cache.json

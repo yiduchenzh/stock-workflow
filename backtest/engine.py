@@ -1,12 +1,15 @@
-"""回测引擎 — Walk-Forward + 每策略胜率 + 动态Kelly"""
-import logging, numpy as np
+"""回测引擎 — Walk-Forward + 每策略胜率 + 动态Kelly + 缓存"""
+import logging, json, numpy as np
 import pandas as pd
 from dataclasses import dataclass, field
+from pathlib import Path
 logger = logging.getLogger("aurora.backtest")
+
+CACHE_DIR = Path(__file__).resolve().parent.parent / "data"
+CACHE_FILE = CACHE_DIR / "wf_cache.json"
 
 @dataclass
 class StrategyStats:
-    """策略统计 — 胜率/盈亏比/夏普/IC"""
     name: str = ""
     trades: int = 0
     wins: int = 0
@@ -22,19 +25,39 @@ class StrategyStats:
     weight: float = 1.0
 
 class BacktestEngine:
-    """Walk-Forward回测引擎"""
     def __init__(self):
         self.stats: dict[str, StrategyStats] = {}
         self._wf_results: dict[str, dict] = {}
         self._init_strategies()
+        self._load_cache()
 
     def _init_strategies(self):
         names = ["first_board","pullback","wave_point","test_line","naked_k","123_rule","ma_breakout"]
         for n in names:
             self.stats[n] = StrategyStats(name=n)
 
+    def _cache_key(self, codes: list, train_days: int, test_days: int, windows: int) -> str:
+        return f"{'-'.join(sorted(codes))}_{train_days}_{test_days}_{windows}"
+
+    def _load_cache(self):
+        try:
+            if CACHE_FILE.exists():
+                self._wf_results = json.loads(CACHE_FILE.read_text())
+                logger.info(f"[WF Cache] loaded {len(self._wf_results)} cached results")
+        except Exception:
+            self._wf_results = {}
+
+    def _save_cache(self):
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        CACHE_FILE.write_text(json.dumps(self._wf_results, indent=2, ensure_ascii=False))
+        logger.debug(f"[WF Cache] saved {len(self._wf_results)} results")
+
     def walk_forward(self, codes: list, train_days=200, test_days=50, windows=3) -> dict:
-        """Walk-Forward验证: 滚动窗口, 样本外测试, 返回每支股票最优Kelly参数"""
+        ck = self._cache_key(codes, train_days, test_days, windows)
+        if ck in self._wf_results and all(self._wf_results.get(c, {}).get("kelly") for c in codes):
+            logger.info(f"[WF] cache hit for {codes[:3]}... ({len(codes)} stocks)")
+            return {c: self._wf_results.get(c, self._wf_results.get(ck, {})) for c in codes}
+
         from data.sources import get_kline
         all_results = {}
         for code in codes[:5]:
@@ -56,6 +79,8 @@ class BacktestEngine:
             best_params = self._compute_best_params(code, results)
             self._wf_results[code] = best_params
             all_results[code] = best_params
+        self._wf_results[ck] = {"cached": True, "codes": codes, "train_days": train_days}
+        self._save_cache()
         return all_results
 
     def _compute_best_params(self, code: str, analysis_results: list) -> dict:
