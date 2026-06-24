@@ -13,10 +13,17 @@ def composite_score(analysis: list, market_regime: str, market_score: float) -> 
         # 1. 战法 25% (下调5%, 给指标系统)
         strategy_score = a.get("best_score", 0) * 0.25
         
-        # 2. MTF共振 15%
-        from strategies.mtf_resonance import check_mtf_resonance
-        mtf = check_mtf_resonance(kline_df) if kline_df is not None else {"score": 0}
-        mtf_score = mtf.get("score", 0) * 0.15
+        # 2. MTF共振 15% (优先使用mtf_intraday三级评分, 降级到mtf_resonance)
+        mtf_score = 0
+        a_mtf = a.get("mtf_score", {})
+        if a_mtf and a_mtf.get("daily", 0) > 0:
+            daily_w = 0.40; m30_w = 0.35; m5_w = 0.25
+            mtf_val = a_mtf["daily"] * daily_w + a_mtf.get("m30", 50) * m30_w + a_mtf.get("m5", 0) * m5_w
+            mtf_score = min(100, max(0, mtf_val)) * 0.15
+        else:
+            from strategies.mtf_resonance import check_mtf_resonance
+            mtf = check_mtf_resonance(kline_df) if kline_df is not None else {"score": 0}
+            mtf_score = mtf.get("score", 0) * 0.15
         
         # 3. 指标系统 15% (新增: MACD背离+KDJ+BOLL)
         from strategies.indicator_system import indicator_composite_score
@@ -74,7 +81,7 @@ def composite_score(analysis: list, market_regime: str, market_score: float) -> 
     logger.info(f"[Score v4.0] {len(results)} scored (MACD+KDJ+BOLL+K线组合+GARCH)")
     return results
 
-def _make_base(a, kline_df):
+def _make_base(a: dict, kline_df) -> dict:
     return {
         "code": a.get("code"), "name": a.get("name"),
         "price": a.get("price", a.get("entry_price", 0)),

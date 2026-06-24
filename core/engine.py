@@ -5,6 +5,7 @@ import logging, sys, time, yaml, os as _os
 from pathlib import Path
 from datetime import datetime
 from .calendar import is_trading_day
+from pipeline.pipeline_validator import PipelineValidator
 
 PROJ = Path(__file__).resolve().parent.parent
 logger = logging.getLogger("aurora")
@@ -23,11 +24,17 @@ class AuroraEngine:
         self.stock_losses: dict = {}
         self.paused_stocks: set = set()
         self.last_trade_date: str = ""
+        self.pipeline_validator = PipelineValidator(self, auto_fix=True)
 
     def run(self):
         if not is_trading_day():
             self.log.info("非交易日,跳过"); return
+        if not is_market_open():
+            self.log.info("非交易时段,跳过盘前分析")
+            return
         t0 = time.time()
+        acct = getattr(self, "account", None)
+        self._day_start_value = acct.total_value if acct is not None else self.capital
         steps = [
             ("step_market", "市场体检(6维度)"),
             ("step_cascade", "三级联动(大盘→板块→个股)"),
@@ -44,13 +51,18 @@ class AuroraEngine:
             ("step_prep", "次日准备"),
         ]
         for step_name, label in steps:
+            self.pipeline_validator.validate_before(step_name)
             try:
                 fn = getattr(self, step_name, None)
                 if fn: fn()
                 self.log.info(f"  {label} OK")
             except Exception as e:
                 self.log.error(f"  {label} FAIL: {e}")
+            self.pipeline_validator.validate_after(step_name)
         self.log.info(f"Done — {time.time()-t0:.1f}s")
+        report = self.pipeline_validator.report()
+        if report["summary"]["total_errors"] > 0 or report["summary"]["total_warnings"] > 0:
+            self.log.warning(self.pipeline_validator.summary_str())
         self._push_summary()
 
     def step_market(self):
@@ -135,7 +147,21 @@ class AuroraEngine:
         from strategies.runner import analyze_all
         from strategies.regime import filter_strategies_by_regime
         from strategies.confirmation import confirm_entry
-        self.analysis = analyze_all(candidates)
+        self.analysis = analyze_all(candidates, market_regime=self.market_regime)
+        # 多周期区间套评分增强: 为每个候选股添加MTF维度
+        try:
+            from strategies.mtf_intraday import analyze_stock
+            for a in self.analysis:
+                code = a.get("code", "")
+                if code:
+                    mtf = analyze_stock(code, has_position=False)
+                    a["mtf_decision"] = mtf.get("decision", {})
+                    a["mtf_daily"] = mtf.get("daily", {})
+                    a["mtf_score"] = {"daily": mtf.get("daily",{}).get("score",50),
+                                       "m30": mtf.get("m30",{}).get("score",50),
+                                       "m5": mtf.get("m5",{}).get("score",0)}
+        except Exception as e:
+            self.log.debug(f"[MTF] batch analysis fail: {e}")
         # 多信号确认过滤
         confirmed = []
         for a in self.analysis:
@@ -210,9 +236,19 @@ class AuroraEngine:
 
     def step_risk(self):
         if not self.plans: return
-        from risk.controls import check_all
+        from risk.controls import check_all, check_liquidity
         self.plans, self.alerts = check_all(self.plans, self.cfg)
-        self.log.info(f"[Step5] {len(self.plans)} passed, {len(self.alerts)} alerts")
+        current = getattr(self.account, "total_value", self._day_start_value)
+        daily_loss = (current - self._day_start_value) / self._day_start_value if self._day_start_value > 0 else 0
+        if daily_loss < -0.03:
+            self.log.warning(f"[Fuse] daily loss {daily_loss*100:.1f}% > 3%, halt")
+            self.plans = []
+            self.alerts.append({"type":"fuse_daily","reason":f"loss{daily_loss*100:.0f}%"})
+        before = len(self.plans)
+        self.plans = [p for p in self.plans if check_liquidity(p.get("code",""), p.get("entry_price",0))]
+        if before > len(self.plans):
+            self.log.info(f"[Liq] filtered {before-len(self.plans)} low-liquidity")
+        self.log.info(f"[Step5] {len(self.plans)} passed, {len(self.alerts)} alerts after risk")
 
     def step_simulate(self):
         if not self.plans: return
@@ -386,6 +422,12 @@ class AuroraEngine:
         dead = [n for n, h in health.items() if h.get("status") == "dead"]
         if dead:
             self.log.warning(f"[Evolve] Dead strategies: {dead}")
+            from strategies.evolution import mark_strategy_inactive
+            for n in dead:
+                h = health.get(n, {})
+                wr = h.get("win_rate", 0) or 0
+                cs = h.get("composite", 0) or 0
+                mark_strategy_inactive(n, reason="WR={:.0%} composite={}".format(wr, cs))
         # Phase 3: Weekly self-evolution (Friday only)
         from datetime import datetime
         if datetime.now().weekday() == 4:  # Friday

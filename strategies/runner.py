@@ -1,11 +1,45 @@
-"""策略执行器 — 5战法 + 波浪 + 123/2B · 斯波朗迪 (R21: 回测驱动修复)"""
+"""策略执行器 — 5战法+动量突破+板块轮动+波浪+123/2B · 斯波朗迪"""
 import logging, numpy as np
-import pandas as pd
 logger = logging.getLogger("aurora.strategies")
+_SECTOR_CACHE = {"data": None, "time": 0}
 
-def analyze_all(candidates: list, kline_override: dict = None) -> list:
+def analyze_all(candidates: list, kline_override: dict = None, market_regime: str = None) -> list:
     from data.sources import get_kline
     results = []
+
+    # 板块轮动检测(全市场一次, 不在个股循环内)
+    sector_best_code = None
+    sector_score = 0
+    sector_name = ""
+    try:
+        from strategies.sector_rotation import check_sector_rotation
+        # 收集所有候选股的K线
+        all_klines = {}
+        for c in candidates[:15]:
+            code = c.get("code", "")
+            kline = kline_override.get(code) if kline_override else None
+            if kline is None:
+                kline = get_kline(code, 60)
+            if kline is not None and not kline.empty:
+                all_klines[code] = kline
+        global _SECTOR_CACHE
+        import time as _t
+        if _SECTOR_CACHE["data"] is None or _t.time() - _SECTOR_CACHE["time"] > 300:
+            try:
+                from data.sources import get_sector_ranking
+                _SECTOR_CACHE["data"] = get_sector_ranking(10)
+                _SECTOR_CACHE["time"] = _t.time()
+            except Exception:
+                pass
+        sr = check_sector_rotation(all_klines, _SECTOR_CACHE["data"])
+        if sr["signal"]:
+            sector_best_code = sr.get("code")
+            sector_score = sr["score"]
+            sector_name = sr.get("sector", "")
+            logger.info(f"[Sector] {sector_name} leader={sector_best_code} score={sector_score}")
+    except Exception as e:
+        logger.debug(f"[Sector] rotation check fail: {e}")
+
     for c in candidates[:15]:
         code = c.get("code", "")
         kline = kline_override.get(code) if kline_override else None
@@ -16,6 +50,7 @@ def analyze_all(candidates: list, kline_override: dict = None) -> list:
             continue
         price = float(kline["close"].iloc[-1])
         signals = []
+
         # 五大战法
         fb = _check_first_board(kline)
         if fb > 0: signals.append(("first_board", fb, price))
@@ -23,24 +58,44 @@ def analyze_all(candidates: list, kline_override: dict = None) -> list:
         if pb > 0: signals.append(("pullback", pb, price))
         wp = _check_wave_point(kline)
         if wp > 0: signals.append(("wave_point", wp, price))
-        # 均值回归 v1.0 (与wave_point低相关: 趋势跟随 vs 反向交易)
+
+        # 均值回归 v1.0
         from strategies.mean_reversion import check_mean_reversion
         mr = check_mean_reversion(kline)
         if mr["signal"]: signals.append(("mean_reversion", mr["score"], price))
-        from strategies.naked_k import detect_pin_bar
-        pb = detect_pin_bar(kline)
-        tl = pb.get("score", 0) if pb else 0
+
+        # 动量突破 v1.0 (R24新增 — 与wave_point低相关)
+        from strategies.momentum_breakout import check_momentum_breakout
+        mo = check_momentum_breakout(kline, market_regime)
+        if mo["signal"]: signals.append(("momentum_breakout", mo["score"], price))
+
+        # 裸K形态
+        from strategies.naked_k import detect_pin_bar, naked_k_score
+        pb_det = detect_pin_bar(kline)
+        tl = pb_det.get("score", 0) if pb_det else 0
         if tl > 0: signals.append(("test_line", tl, price))
-        from strategies.naked_k import naked_k_score
         nk = naked_k_score(kline)
-        if nk >= 50: signals.append(("naked_k", int(nk), price))  # R20 fix: threshold 40→60
-        # 123法则 (斯波朗迪·真实实现)
+        if nk >= 50: signals.append(("naked_k", int(nk), price))
+
+        # 123法则
         s123 = _check_123_rule(kline)
         if s123 > 0: signals.append(("123_rule", s123, price))
+
         # MA突破
         ma = _check_ma_breakout(kline)
         if ma > 0: signals.append(("ma_breakout", ma, price))
-        # 多战法投票: >=2个战法看好→确认
+
+        # 板块轮动加成: 如果是板块推荐股, 加信号分
+        if code == sector_best_code and sector_best_code is not None:
+            bonus = int(sector_score * 0.5)  # 板块轮动50%加成
+            if not signals:
+                signals.append(("sector_rotation", max(30, bonus), price))
+            else:
+                # 给已有信号加分
+                signals = [(s[0], min(100, s[1] + int(bonus * 0.3)), s[2]) for s in signals]
+                signals.append(("sector_rotation", min(100, bonus), price))
+
+        # 多战法投票
         if len(signals) >= 2:
             weighted_score = sum(s[1] for s in signals) / len(signals) + 10
             best_strat = max(signals, key=lambda x: x[1])[0]
@@ -49,6 +104,7 @@ def analyze_all(candidates: list, kline_override: dict = None) -> list:
             weighted_score = signals[0][1]
         else:
             best_strat = None; weighted_score = 0
+
         results.append({
             "code": code, "name": c.get("name",""),
             "signal": bool(signals),
@@ -61,8 +117,7 @@ def analyze_all(candidates: list, kline_override: dict = None) -> list:
             "all_signals": [s[0] for s in signals],
         })
     return results
-
-def _check_first_board(df, lookback=60, cons_days=5):
+def _check_first_board(df, lookback: int = 60, cons_days: int = 5) -> int:
     if len(df) < lookback: return 0
     close = df["close"].values; vol = df["volume"].values
     chg = np.diff(close) / close[:-1] * 100
@@ -78,7 +133,7 @@ def _check_first_board(df, lookback=60, cons_days=5):
     score = 50 + min(cons_days * 2, 20) + (10 if cons_range < 3 else 0) + (8 if vol_ratio >= 2.5 else 0)
     return min(score, 100)
 
-def _check_pullback(df):
+def _check_pullback(df) -> int:
     if len(df) < 30: return 0
     close = df["close"].values; vol = df["volume"].values
     chg = np.diff(close) / close[:-1] * 100
@@ -92,11 +147,9 @@ def _check_pullback(df):
     if dev > 0.03: return 0
     return 50 + (20 if dev < 0.01 else 10)
 
-def _check_wave_point(df, atr_period=14):
-    """R20 fix: 趋势过滤 — 只在上升趋势中买低点"""
+def _check_wave_point(df, atr_period: int = 14) -> int:
     if len(df) < atr_period + 30: return 0
     h, l, c = df["high"].values, df["low"].values, df["close"].values
-    # 趋势过滤: MA20 > MA50 且 close > MA20 (不在下跌趋势中接飞刀)
     ma20 = np.mean(c[-20:])
     ma50 = np.mean(c[-50:])
     if not (ma20 > ma50 and c[-1] > ma20):
@@ -108,13 +161,11 @@ def _check_wave_point(df, atr_period=14):
     pos = (c[-1] - min(l[-10:])) / (max(h[-10:]) - min(l[-10:]))
     if pos > 0.55: return 0
     score = 50 + (10 if wave > 0.05 else 5) + (10 if pos < 0.15 else 0)
-    # ATR/c > 1.5% 加分
     if atr / c[-1] > 0.015:
         score += 8
     return min(score, 100)
 
-def _calc_adx(high, low, close, period=14):
-    """ADX趋势强度 (0-100). ADX>=10=有趋势, 123法则可用"""
+def _calc_adx(high, low, close, period: int = 14) -> float:
     if len(close) < period * 2 + 5:
         return 0
     n = len(close)
@@ -146,8 +197,7 @@ def _calc_adx(high, low, close, period=14):
         adx[i] = adx[i-1] + alpha*(dx[i]-adx[i-1])
     return max(0, min(100, adx[-1]))
 
-
-def _check_test_line(df, wick_ratio=0.60):
+def _check_test_line(df, wick_ratio: float = 0.60) -> int:
     if len(df) < 5: return 0
     o, h, l, c = df["open"].values[-1], df["high"].values[-1], df["low"].values[-1], df["close"].values[-1]
     body_h = max(o, c); body_l = min(o, c)
@@ -160,31 +210,24 @@ def _check_test_line(df, wick_ratio=0.60):
         return 40
     return 0
 
-def _check_123_rule(df):
-    """123法则+ADX: ①ADX趋势过滤 ②趋势线突破 ③回踩确认 ④放量验证"""
+def _check_123_rule(df) -> int:
     if len(df) < 40: return 0
     close = df["close"].values; high = df["high"].values
     low = df["low"].values; vol = df["volume"].values
-    # ADX趋势过滤: <15时无趋势, 123法则不可靠
     adx = _calc_adx(high, low, close)
     if adx < 10:
         return 0
-    # 趋势线突破
     lookback = 20
     trendline_top = max(high[-lookback:])
     if close[-1] <= trendline_top * 0.98:
         return 0
-    # 回踩确认+再次突破: 价格短暂回调后再次上涨突破前高
     recent_high_5 = max(high[-5:])
     ref_high = max(high[-10:-5]) if len(close) >= 10 else max(high[:-5])
-    # 条件A: 当前价格突破最近5日高点 (再次突破)
     breakout = close[-1] > recent_high_5 * 0.99
-    # 条件B: 回调不破前低 (回踩确认)
     ref_low = min(low[-10:-5]) if len(close) >= 10 else min(low[:-5])
     retrace_ok = min(low[-5:]) > ref_low * 0.95
     if not (breakout and retrace_ok):
         return 0
-    # 放量验证
     vol_ratio = vol[-1] / np.mean(vol[-20:]) if np.mean(vol[-20:]) > 0 else 1
     if vol_ratio < 1.0:
         return 0
@@ -195,8 +238,7 @@ def _check_123_rule(df):
     score = 50 + trend_score + min(int((vol_ratio - 1.2) * 15), 15) + adx_bonus
     return min(score, 95)
 
-
-def _check_ma_breakout(df):
+def _check_ma_breakout(df) -> int:
     close = df["close"].values; vol = df["volume"].values
     if len(close) < 20: return 0
     ma5 = np.mean(close[-5:]); ma10 = np.mean(close[-10:]); ma20 = np.mean(close[-20:])

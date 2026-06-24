@@ -118,7 +118,8 @@ def get_real_stock_list() -> list:
             if __import__("time").time() - data.get("time", 0) < STOCK_CACHE_TTL:
                 logger.info(f"[Cache] {len(data.get('codes',[]))} stocks ({(STOCK_CACHE_TTL - (__import__("time").time() - data['time'])):.0f}s TTL)")
                 return data["codes"]
-    except: pass
+    except Exception:
+        pass
     
     codes = []
     for fs in ['m:0+t:6,m:0+t:80', 'm:1+t:2,m:1+t:23']:
@@ -143,7 +144,8 @@ def get_real_stock_list() -> list:
                         codes.extend(chunk)
                         if len(items2) < 100: break
                         continue
-                except: pass
+                except Exception:
+                    pass
                 logger.warning(f'EM p{pn} retry also failed')
                 break
     if codes:
@@ -152,18 +154,20 @@ def get_real_stock_list() -> list:
         # Save to cache
         try:
             STOCK_CACHE.write_text(_j.dumps({"time": __import__("time").time(), "codes": result}))
-        except: pass
+        except Exception:
+            pass
         return result
     logger.warning('EM fail, try Sina')
     codes = _sina_stock_list()
     if codes:
         try:
             STOCK_CACHE.write_text(_j.dumps({"time": __import__("time").time(), "codes": codes}))
-        except: pass
+        except Exception:
+            pass
     return codes
 
 
-def get_kline_period(code: str, period: str = "day", days: int = 250):
+def get_kline_period(code: str, period: str = "day", days: int = 250) -> pd.DataFrame:
     """多周期K线: day/week/month — 真实数据来自腾讯"""
     import requests as req
     pfx = _prefix(code)
@@ -262,7 +266,7 @@ def _save_sector_cache(sectors):
     except Exception:
         pass
 
-def _load_sector_cache():
+def _load_sector_cache() -> list:
     try:
         if SECTOR_CACHE.exists():
             import json as _j
@@ -428,6 +432,7 @@ def _update_cache_ts(cache_key: str):
 
 def validate_kline_data(df, code: str = "") -> dict:
     """K线数据质量检查"""
+    import numpy as np
     issues = []
     if df is None:
         return {"valid": False, "issues": ["DataFrame is None"], "code": code}
@@ -492,6 +497,6 @@ def get_kline_with_validation(code: str, days: int = 120) -> pd.DataFrame:
     return df
 
 # 兼容层: 保持get_kline名称不变, 所有外部导入不受影响
-def get_kline(code: str, days: int = 250) -> pd.DataFrame:
+def get_kline(code: str, days: int = 500) -> pd.DataFrame:
     """获取K线(带数据质量检查)"""
     return get_kline_with_validation(code, days)

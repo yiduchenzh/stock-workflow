@@ -32,7 +32,7 @@ class BacktestEngine:
         self._load_cache()
 
     def _init_strategies(self):
-        names = ["first_board","pullback","wave_point","test_line","naked_k","123_rule","ma_breakout"]
+        names = ["first_board","pullback","wave_point","test_line","naked_k","123_rule","ma_breakout","mean_reversion","momentum_breakout","sector_rotation"]
         for n in names:
             self.stats[n] = StrategyStats(name=n)
 

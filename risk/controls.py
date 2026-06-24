@@ -5,10 +5,10 @@ from pathlib import Path
 logger = logging.getLogger("aurora.risk")
 STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "risk_state.json"
 
-def _load(): 
+def _load() -> dict: 
     try: return json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
     except Exception: return {}
-def _save(s): 
+def _save(s: dict) -> None: 
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(s, indent=2))
 
@@ -122,3 +122,20 @@ def record_trade(pnl_pct: float):
 
 def reset():
     _save({"breaker": False, "consec": 0, "daily_pnl": 0.0, "peak_value": 0.0, "prev_day_value": 0.0})
+
+def check_liquidity(code: str, price: float, min_vol: int = 5000000) -> bool:
+    """liquidity filter: skip stocks with avg daily volume < 5M"""
+    if not code: return False
+    try:
+        from data.sources import get_kline
+        import numpy as np
+        df = get_kline(code, 20)
+        if df is None or df.empty: return False
+        close = df["close"].values.astype(float)
+        vol = df["volume"].values.astype(float)
+        avg_dollar = float(np.mean(close * vol))
+        if avg_dollar < min_vol:
+            return False
+        return True
+    except Exception:
+        return True
