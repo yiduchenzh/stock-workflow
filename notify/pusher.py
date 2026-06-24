@@ -178,6 +178,48 @@ def push_morning_report(engine):
     _send(title, NL.join(lines), engine)
 
 
+def push_trade_plan(engine):
+    """推送当日交易计划"""
+    plans = getattr(engine, "plans", [])
+    scores = getattr(engine, "scores", [])
+    analysis = getattr(engine, "analysis", [])
+    if not plans and not scores:
+        logger.info("[Push] 计划: 今日无交易计划")
+        _send("Aurora交易计划 " + datetime.now().strftime("%m-%d %H:%M"),
+              "今日无符合条件的交易计划\n市场状态: " + str(engine.market_regime) + " (" + str(engine.market_score) + "/100)", engine)
+        return
+    title = "Aurora交易计划 " + datetime.now().strftime("%m-%d %H:%M")
+    NL = chr(10)
+    lines = []
+    lines.append("【市场状态】")
+    lines.append(str(engine.market_regime) + " (" + str(engine.market_score) + "/100)")
+    lines.append("")
+    lines.append("【今日交易计划】")
+    if plans:
+        for p in plans[:5]:
+            co = p.get("code","?")
+            nm = p.get("name","?")
+            st = p.get("strategy","?")
+            ep = p.get("entry_price",0)
+            sh = p.get("shares",0)
+            sl = p.get("stop_loss",0)
+            tp = p.get("take_profit",0)
+            wg = p.get("weight",0)
+            lines.append(str(co) + " " + str(nm))
+            lines.append("  策略:" + str(st) + " 价格:" + "{:.2f}".format(ep) + " 股数:" + str(sh))
+            lines.append("  止损:" + "{:.2f}".format(sl) + " 止盈:" + "{:.2f}".format(tp) + " 仓位:" + "{:.0%}".format(wg))
+            lines.append("")
+    else:
+        lines.append("  今日无计划开仓")
+    lines.append("")
+    lines.append("【评分前列(待观察)】")
+    if scores:
+        for s in scores[:3]:
+            lines.append("  " + str(s.get("code","?")) + " 综合评分:" + str(s.get("composite",0)) + " 策略:" + str(s.get("best_strategy","?")))
+    lines.append("")
+    lines.append("总策略: " + str(len(analysis)) + "只 | 计划开仓: " + str(len(plans)) + "只")
+    _send(title, NL.join(lines), engine)
+
 def _send(title, desc, engine):
     token = engine.cfg.get("notify", {}).get("sct_token", "")
     if not token: return

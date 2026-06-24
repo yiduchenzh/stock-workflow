@@ -26,8 +26,14 @@ elif args.phase == "morning":
     engine.step_market()
     engine.step_cascade()
     engine.step_screen()
-    from notify.pusher import push_morning_report
+    engine.step_analyze()
+    engine.step_score()
+    engine.step_position()
+    engine.step_risk()
+    engine.step_simulate()
+    from notify.pusher import push_morning_report, push_trade_plan
     push_morning_report(engine)
+    push_trade_plan(engine)
 
 elif args.phase == "monitor":
     engine.step_market()
