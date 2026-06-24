@@ -81,6 +81,23 @@ def push_morning_report(engine):
     lines.append("大盘评分: " + str(engine.market_score) + "/100 | 状态: " + engine.market_regime)
     nb = getattr(engine, "northbound", {})
     lines.append("北向资金: " + str(nb.get("signal","N/A")))
+    # 外围市场
+    try:
+        import urllib.request
+        gcodes = {"hkHSI":"港股恒指","usDJI":"道琼斯","usIXIC":"纳指","usINX":"标普500"}
+        gurl = "https://qt.gtimg.cn/q=" + ",".join(gcodes.keys())
+        gdata = urllib.request.urlopen(gurl, timeout=8).read().decode("gbk", "replace")
+        for gl in gdata.strip().split(";"):
+            if not gl.strip() or "=" not in gl: continue
+            gparts = gl.split('"')[1].split("~") if '"' in gl else []
+            if len(gparts) >= 32:
+                gk = gl.split("=")[0].split("_")[-1]
+                gn = gcodes.get(gk, gparts[1])
+                gp = gparts[3] if len(gparts)>3 else "?"
+                gc = gparts[32] if len(gparts)>32 else "?"
+                lines.append("  " + gn + ": " + gp + " (" + gc + "%)")
+    except Exception:
+        lines.append("  (外围数据获取失败)")
     lines.append("")
     lines.append("【板块热点TOP5】")
     try:
