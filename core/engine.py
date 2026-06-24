@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging, sys, time, yaml, os as _os
 from pathlib import Path
 from datetime import datetime
-from .calendar import is_trading_day
+from .calendar import is_trading_day, is_market_open
 from pipeline.pipeline_validator import PipelineValidator
 
 PROJ = Path(__file__).resolve().parent.parent
