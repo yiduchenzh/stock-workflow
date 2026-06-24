@@ -46,3 +46,18 @@ data/wf_cache.json
 .pytest_cache/
 _backtest_runner.py
 data/test_mtf.py
+
+# Helper scripts
+_s*.bat
+_h*.py
+_fix_*.py
+_opt_*.py
+_profile*.py
+_gen_*.py
+_write_*.py
+_test_*.py
+_test_data.py
+
+# Test data cache
+data/test_cache/
+data/strategy_evolution.json

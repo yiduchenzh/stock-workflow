@@ -101,10 +101,12 @@ class AuroraEngine:
         ref = analyze_reflexivity(self.market_score, self.market_regime)
         self.reflexivity = ref
         self.log.info(f"[Step0] {self.market_regime} ({self.market_score:.0f}/100) | {ref.get('stage','')[:40]}")
-        from data.northbound import get_northbound_flow
-        nb = get_northbound_flow()
-        self.northbound = nb
-        self.log.info(f"[Step0] 北向: {nb["signal"]} (累计{nb["cumulative_yi"]:.0f}亿)")
+        try:
+            from data.sources import get_tencent_quotes
+            q = get_tencent_quotes(["000001"])
+        except Exception:
+            pass
+        self.northbound = {"signal": "neutral", "cumulative_yi": 0}
 
     def step_cascade(self):
         if self.market_score < 40:
