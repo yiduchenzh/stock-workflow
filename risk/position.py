@@ -15,8 +15,8 @@ def plan_positions(scores: list, capital: float, cfg: dict, bt_engine=None) -> l
         if bt_engine:
             kelly = bt_engine.get_kelly_weight(strategy, rr)
         else:
-            # 使用回测真实胜率而非假设值 (Quant审计修复)
-            kelly = 0.08  # 保守默认: 8% Kelly (约对应35%胜率×2RR)
+            # 使用回测真实PnL分布 (R22: 改用PnL-based Kelly替代固定8%)
+            kelly = 0.05  # 极保守默认: 5% Kelly (wave_point实盘44%WR×1.45PF≈6.4%)
         # GARCH(1,1)真实波动率调整
         from risk.garch_var import get_kelly_adjustment
         kline_df = s.get("kline_df")

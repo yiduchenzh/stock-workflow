@@ -119,3 +119,32 @@ def get_kelly_adjustment(kline_df):
         return 0.7
     else:
         return 0.4
+
+
+def get_market_volatility_score():
+    """市场波动率评分: 0-100, 基于代表性股票波动率"""
+    try:
+        from data.sources import get_kline
+        # 用上证50ETF(510050)或沪深300(510300)估计市场波动
+        etf_codes = ["510050", "510300"]
+        for code in etf_codes:
+            df = get_kline(code, 60)
+            if df is not None and len(df) >= 30:
+                close = df["close"].values
+                returns = np.diff(np.log(close.astype(np.float64)))
+                result = garch11_mle(returns)
+                annual_vol = result["annual_vol"]
+                # 年化15-25%=正常(50分), <15%=低波(高分), >35%=高波(低分)
+                if annual_vol < 15:
+                    return 80
+                elif annual_vol < 20:
+                    return 65
+                elif annual_vol < 30:
+                    return 50
+                elif annual_vol < 40:
+                    return 30
+                else:
+                    return 15
+    except Exception:
+        pass
+    return 50

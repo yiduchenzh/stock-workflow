@@ -23,6 +23,10 @@ def analyze_all(candidates: list, kline_override: dict = None) -> list:
         if pb > 0: signals.append(("pullback", pb, price))
         wp = _check_wave_point(kline)
         if wp > 0: signals.append(("wave_point", wp, price))
+        # 均值回归 v1.0 (与wave_point低相关: 趋势跟随 vs 反向交易)
+        from strategies.mean_reversion import check_mean_reversion
+        mr = check_mean_reversion(kline)
+        if mr["signal"]: signals.append(("mean_reversion", mr["score"], price))
         from strategies.naked_k import detect_pin_bar
         pb = detect_pin_bar(kline)
         tl = pb.get("score", 0) if pb else 0

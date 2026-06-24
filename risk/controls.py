@@ -32,10 +32,37 @@ def check_all(plans: list, _positions=None, cfg: dict = None) -> tuple:
     filtered = plans[:max_pos]
     if len(plans) > max_pos:
         alerts.append({"type": "cap", "msg": f"仓位超限({len(plans)}→{max_pos})"})
-    # GARCH-VaR动态检查: 单笔风险不超过总资本3% (Tsay第6章)
+    # ATR动态止损 + GARCH-VaR: 单笔风险不超过总资本3%
     capital = risk_cfg.get("capital", 1_000_000)
     for p in filtered:
-        stop_loss_pct = abs(p.get("stop_loss", p.get("entry_price", 10) * 0.95) / p.get("entry_price", 10) - 1) if p.get("entry_price", 10) > 0 else 0.05
+        # ATR动态止损: 用ATR替代固定百分比
+        kline_df = p.get("kline_df")
+        if kline_df is not None and len(kline_df) >= 14:
+            tr = np.array([max(
+                kline_df["high"].values[i] - kline_df["low"].values[i],
+                abs(kline_df["high"].values[i] - kline_df["close"].values[i-1]),
+                abs(kline_df["low"].values[i] - kline_df["close"].values[i-1])
+            ) for i in range(1, len(kline_df))])
+            atr = np.mean(tr[-14:])
+            entry = p.get("entry_price", kline_df["close"].values[-1])
+            if entry > 0:
+                atr_sl_pct = min(max(atr / entry * 2.5, 0.02), 0.10)  # 2.5倍ATR, 2%-10%
+                p["stop_loss"] = entry * (1 - atr_sl_pct)
+                stop_loss_pct = atr_sl_pct
+            else:
+                stop_loss_pct = abs(p.get("stop_loss", entry * 0.95) / entry - 1) if entry > 0 else 0.05
+        else:
+            stop_loss_pct = abs(p.get("stop_loss", p.get("entry_price", 10) * 0.95) / p.get("entry_price", 10) - 1) if p.get("entry_price", 10) > 0 else 0.05
+
+        # 流动性检查: 日均成交量<500万时告警
+        if kline_df is not None and len(kline_df) >= 20:
+            avg_vol = np.mean(kline_df["volume"].values[-20:])
+            avg_price = np.mean(kline_df["close"].values[-20:])
+            avg_dollar_vol = avg_vol * avg_price
+            if avg_dollar_vol < 5_000_000:  # 日均成交额<500万
+                alerts.append({"type": "liquidity", "code": p.get("code"),
+                              "msg": f"流动性不足: 日均成交额{avg_dollar_vol/1e4:.0f}万<500万"})
+                continue
         risk_amount = p.get("entry_price", 0) * p.get("shares", 0) * min(stop_loss_pct, 1.0)
         # GARCH-VaR: 如果可用，用动态VaR替代
         from risk.garch_var import predict_var

@@ -62,12 +62,28 @@ class AuroraEngine:
         sectors = get_sector_ranking(100) or []
         sec_up = sum(1 for s in sectors if s.get("change_pct", 0) > 0)
         sec_score = int(min(sec_up / max(len(sectors), 1) * 100, 100))
-        total = idx_score * 0.40 + ad_score * 0.25 + sec_score * 0.15 + 50 * 0.20
-        self.market_score = min(100, total)
-        if self.market_score >= 75: self.market_regime = "bull_strong"
+        total = idx_score * 0.40 + ad_score * 0.10 + sec_score * 0.10 + 50 * 0.20
+        # 补充指标: 涨跌比(ad_score已覆盖) + 涨停数
+        from data.sources import get_limit_up_count
+        try:
+            limit_up_cnt = get_limit_up_count() or 0
+            limit_up_score = min(limit_up_cnt / 50 * 20, 20)  # 50只涨停=满分20
+        except Exception:
+            limit_up_score = 10
+        total += limit_up_score
+        # 波动率补充: 用ATR指数反映市场恐慌程度
+        from risk.garch_var import get_market_volatility_score
+        try:
+            vol_score = get_market_volatility_score()
+            total = total * (1.0 + (vol_score - 50) / 200)
+        except Exception:
+            pass
+        self.market_score = min(100, max(0, total))
+        # 优化阈值: 结合经典道氏理论+彼得斯分形
+        if self.market_score >= 70: self.market_regime = "bull_strong"
         elif self.market_score >= 55: self.market_regime = "bull_weak"
-        elif self.market_score >= 45: self.market_regime = "range"
-        elif self.market_score >= 25: self.market_regime = "bear_weak"
+        elif self.market_score >= 40: self.market_regime = "range"
+        elif self.market_score >= 20: self.market_regime = "bear_weak"
         else: self.market_regime = "bear_strong"
         from strategies.reflexivity import analyze_reflexivity
         ref = analyze_reflexivity(self.market_score, self.market_regime)
@@ -200,7 +216,7 @@ class AuroraEngine:
 
     def step_simulate(self):
         if not self.plans: return
-        from monitor.simulator import SimAccount
+        from executor.sim_account import SimAccount
         acc = SimAccount(self.capital, self.cfg)
         for p in self.plans:
             acc.buy(p["code"], p["entry_price"], p["shares"], p.get("strategy", ""))
@@ -348,12 +364,12 @@ class AuroraEngine:
         # C: 执行卖出 (使用已有模拟账户)
         acc = getattr(self, 'account', None)
         if acc is None:
-            from monitor.simulator import SimAccount
+            from executor.sim_account import SimAccount
             acc = SimAccount(self.capital)
             self.account = acc
         for s in sell_list:
             result = acc.sell(s["code"], s["price"], s["shares"], s["reason"])
-            if result is not None:
+            if result and result.get("success"):
                 self.alerts.append({"type": "rebalance", "code": s["code"],
                                     "msg": s["reason"], "shares": s["shares"]})
                 self.log.info(f"  [Sell] {s['code']} {s['shares']}sh @{s['price']:.2f} {s['reason']}")

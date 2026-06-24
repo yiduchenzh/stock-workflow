@@ -387,3 +387,22 @@ def get_top_sectors(top_n=5):
     top = [s['name'] for s in sectors[:top_n] if s.get('name')]
     logger.info(f'[Sector] Top {top_n}: {top}')
     return top
+def get_limit_up_count():
+    """获取今日涨停股票数量(近似),用于市场热度评分"""
+    try:
+        result = _try_wz_first("get_limit_up_count")
+        if result is not None:
+            return result
+        # fallback: 用腾讯涨停板接口
+        import urllib.request, json
+        url = "https://push2.eastmoney.com/api/qt/clist/get?cb=&pn=1&pz=10&po=1&np=1&fields=f12,f14,f3&fid=f3&fs=m:90+t:3"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        data = urllib.request.urlopen(req, timeout=5).read().decode("utf-8")
+        # 简易解析: 提取股票数量
+        import re
+        matches = re.findall(r'"total":(\d+)', data)
+        if matches:
+            return int(matches[0])
+        return 0
+    except Exception:
+        return 0

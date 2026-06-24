@@ -39,8 +39,8 @@ def get_strategy_health(strategy_name: str) -> dict:
     """获取策略健康度"""
     d = _load().get(strategy_name, {})
     trades = d.get("trades", [])
-    if len(trades) < 10:
-        return {"status": "new", "trades": len(trades), "win_rate": None, "recommendation": "积累数据中"}
+    if len(trades) < 6:
+        return {"status": "new", "trades": len(trades), "win_rate": None, "recommendation": "积累数据中(≥6笔)"}
     wins = sum(1 for t in trades if t.get("win"))
     wr = wins / len(trades)
     avg_pnl = sum(t.get("pnl", 0) for t in trades) / len(trades)
