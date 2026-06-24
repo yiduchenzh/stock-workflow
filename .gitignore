@@ -43,3 +43,6 @@ bt_*.py
 data/bt_*.json
 _data_*/
 data/wf_cache.json
+.pytest_cache/
+_backtest_runner.py
+data/test_mtf.py

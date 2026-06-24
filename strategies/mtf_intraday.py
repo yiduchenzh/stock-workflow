@@ -176,14 +176,38 @@ def _ema(data, period):
     return np.array(result)
 
 def analyze_stock(code: str, has_position: bool = False) -> dict:
-    """一站式多周期分析"""
+    """一站式多周期分析 + 缠论区间套精确定位"""
     kl = get_mtf_kline(code)
     daily_r = analyze_daily_trend(kl["daily"])
     m30_r = analyze_m30_trend(kl["m30"])
     m5_r = analyze_m5_entry(kl["m5"])
     decision = synthesize(daily_r, m30_r, m5_r)
+
+    # 缠论区间套: 在日线K线数据上做三级递归
+    chan_nesting = {"precision": "none", "score": 0, "detail": "未触发"}
+    if kl["daily"] is not None and len(kl["daily"]) >= 90:
+        try:
+            from strategies.chan_theory import interval_nesting
+            chan_nesting = interval_nesting(kl["daily"])
+        except Exception as e:
+            logger.warning(f"[ChanNest] {code}: {e}")
+
+    # 区间套修正: 如果区间套高精度(precise)且5分信号方向一致, 提升置信度
+    if chan_nesting.get("precise") and decision["confidence"] != "high":
+        # 三级区间套共振, 提升决策等级
+        nest_dir = chan_nesting.get("direction", "")
+        if ("bullish" in nest_dir and "buy" in decision.get("action", "")) or            ("bearish" in nest_dir and "sell" in decision.get("action", "")):
+            decision["confidence"] = "high"
+            decision["desc"] += " [缠论区间套确认]"
+        elif "bullish" in nest_dir:
+            # 区间套看多但MTF未买入: 提示但不强制
+            decision["chan_note"] = "缠论区间套看多, 等待5分买点"
+        elif "bearish" in nest_dir:
+            decision["chan_note"] = "缠论区间套看空, 注意风险"
+
     return {
         "code": code, "decision": decision,
         "daily": daily_r, "m30": m30_r, "m5": m5_r,
+        "chan_nesting": chan_nesting,
         "has_position": has_position,
     }

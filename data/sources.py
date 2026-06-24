@@ -232,7 +232,7 @@ def get_market_breadth() -> dict:
     except Exception:
         return {"ad_score": 0, "up_count": 0, "down_count": 0}
 
-def get_kline(code: str, days: int = 250) -> pd.DataFrame:
+def _original_get_kline(code: str, days: int = 250) -> pd.DataFrame:
     """获取历史K线(腾讯日K)"""
     import requests
     pfx = _prefix(code)
@@ -406,3 +406,92 @@ def get_limit_up_count():
         return 0
     except Exception:
         return 0
+
+
+# ═══ 数据质量管理 ═══
+import time as _time
+
+_CACHE_TTL = 3600  # 缓存有效期1小时
+_cache_timestamps = {}
+
+def _check_cache_ttl(cache_key: str, ttl: int = _CACHE_TTL) -> bool:
+    """检查缓存是否过期"""
+    now = _time.time()
+    last = _cache_timestamps.get(cache_key, 0)
+    if now - last < ttl:
+        return True  # 缓存有效
+    return False
+
+def _update_cache_ts(cache_key: str):
+    """更新缓存时间戳"""
+    _cache_timestamps[cache_key] = _time.time()
+
+def validate_kline_data(df, code: str = "") -> dict:
+    """K线数据质量检查"""
+    issues = []
+    if df is None:
+        return {"valid": False, "issues": ["DataFrame is None"], "code": code}
+    if df.empty:
+        return {"valid": False, "issues": ["Empty DataFrame"], "code": code}
+
+    close = df["close"].values if "close" in df.columns else None
+    vol = df["volume"].values if "volume" in df.columns else None
+    high = df["high"].values if "high" in df.columns else None
+    low = df["low"].values if "low" in df.columns else None
+
+    # 1. 缺失值检查
+    if close is not None and np.any(np.isnan(close)):
+        issues.append("close列含NaN")
+    if vol is not None and np.any(np.isnan(vol)):
+        issues.append("volume列含NaN")
+
+    # 2. 价格合理性
+    if close is not None:
+        if np.any(close <= 0):
+            issues.append("存在<=0的收盘价")
+        if np.any(np.abs(np.diff(close) / close[:-1]) > 0.20):
+            issues.append("存在单日涨跌幅>20%的异常数据")
+
+    # 3. 高低价逻辑
+    if high is not None and low is not None:
+        if np.any(high < low):
+            issues.append("high<low的数据行")
+        if close is not None and np.any(close > high):
+            issues.append("close>high的数据行")
+        if close is not None and np.any(close < low):
+            issues.append("close<low的数据行")
+
+    # 4. 停牌检测: 连续多日价格不变
+    if close is not None and len(close) >= 5:
+        flat_days = sum(1 for i in range(1, len(close)) if abs(close[i] - close[i-1]) / max(close[i-1], 0.01) < 0.001)
+        if flat_days > len(close) * 0.3:
+            issues.append(f"疑似停牌: {flat_days}/{len(close)}日价格无变动")
+
+    # 5. 成交量异常
+    if vol is not None and len(vol) >= 5:
+        if np.any(vol < 0):
+            issues.append("存在负成交量")
+        avg_vol = np.mean(vol[vol > 0]) if np.any(vol > 0) else 1
+        if avg_vol == 0:
+            issues.append("成交量全为0")
+
+    return {
+        "valid": len(issues) == 0,
+        "issues": issues,
+        "code": code,
+        "rows": len(df),
+    }
+
+def get_kline_with_validation(code: str, days: int = 120) -> pd.DataFrame:
+    """获取K线并做数据质量检查"""
+    df = _original_get_kline(code, days)
+    if df is not None and not df.empty:
+        qc = validate_kline_data(df, code)
+        if not qc["valid"]:
+            logger.warning(f"[DataQC] {code}: {qc['issues']}")
+    return df
+
+# 兼容层: 保持get_kline名称不变, 所有外部导入不受影响
+def get_kline(code: str, days: int = 250) -> pd.DataFrame:
+    """获取K线(带数据质量检查)"""
+    return get_kline_with_validation(code, days)

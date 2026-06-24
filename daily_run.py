@@ -44,5 +44,9 @@ elif args.phase == "monitor":
 elif args.phase == "review":
     engine.run()
     push_daily_review(engine)
+    from notify.review_report import generate_report, push_report
+    report = generate_report(engine)
+    logger.info(f"\n{report}")
+    push_report(engine)
 else:
     engine.run()

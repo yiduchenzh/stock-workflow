@@ -1,6 +1,6 @@
 
 """风控审核 — VaR + 压力测试 + 熔断 · 斯波朗迪+格雷厄姆"""
-import json, logging, numpy as np
+import json, logging, numpy as np, time
 from pathlib import Path
 logger = logging.getLogger("aurora.risk")
 STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "risk_state.json"
@@ -18,7 +18,22 @@ def check_all(plans: list, _positions=None, cfg: dict = None) -> tuple:
     state.setdefault("daily_pnl", 0.0); state.setdefault("peak_value", 0.0)
     state.setdefault("prev_day_value", 0.0)
     if state.get("breaker"):
-        return [], [{"type": "breaker", "msg": "熔断已触发，需人工恢复"}]
+        # 自动恢复: 如果熔断已触发超过24小时, 自动重置
+        from datetime import datetime as _dt
+        try:
+            breaker_time = state.get("breaker_time", 0)
+            if breaker_time > 0 and (time.time() - breaker_time) > 86400:
+                logger.warning("[AutoRecovery] 熔断已超24h, 自动重置")
+                state["breaker"] = False
+                state["consec"] = 0
+                state["breaker_time"] = 0
+                _save(state)
+                # 继续执行而非返回空
+            else:
+                return [], [{"type": "breaker", "msg": f"熔断中(距自动恢复还有{max(0, 86400 - int(time.time() - breaker_time))}s)"}]
+        except Exception:
+            return [], [{"type": "breaker", "msg": "熔断已触发，需人工恢复"}]
+
     risk_cfg = cfg.get("risk", {})
     max_pos = risk_cfg.get("max_positions", 5)
     max_consec = risk_cfg.get("max_consecutive_losses", 3)
@@ -26,6 +41,7 @@ def check_all(plans: list, _positions=None, cfg: dict = None) -> tuple:
     # 连续亏损
     if state.get("consec", 0) >= max_consec:
         state["breaker"] = True
+        state["breaker_time"] = time.time()
         _save(state)
         return [], [{"type": "consec", "msg": f"连续{state['consec']}次亏损,触发熔断"}]
     # 仓位上限
@@ -93,6 +109,7 @@ def check_all(plans: list, _positions=None, cfg: dict = None) -> tuple:
         alerts.append({"type": "daily_loss", 
                       "msg": f"日亏损{state['daily_pnl']/capital*100:.1f}%超过上限{daily_limit*100:.0f}%, 触发熔断"})
         state["breaker"] = True
+        state["breaker_time"] = time.time()
         _save(state)
         return [], alerts
     return filtered, alerts
