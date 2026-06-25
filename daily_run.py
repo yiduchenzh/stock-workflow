@@ -1,7 +1,17 @@
 """Aurora Trading — 每日自动运行 · 分阶段推送"""
-import sys, logging, argparse
+import sys, logging, argparse, os
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
+# 从.env加载环境变量 (解决计划任务SYSTEM用户无环境变量的问题)
+try:
+    env_path = Path(__file__).parent / ".env"
+    if env_path.exists():
+        for line in env_path.read_text().strip().split("\n"):
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                os.environ[k.strip()] = v.strip()
+except Exception:
+    pass
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.FileHandler("data/aurora.log", encoding="utf-8"), logging.StreamHandler()])
 
