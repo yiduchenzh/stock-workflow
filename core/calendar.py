@@ -7,7 +7,7 @@ HOLIDAYS = {
     "2026-09-25","2026-10-01","2026-10-02","2026-10-05","2026-10-06","2026-10-07",
 }
 MORNING = (time(9,30), time(11,30))
-AFTERNOON = (time(13,0), time(15,0))
+AFTERNOON = (time(13,0), time(15,30))  # 2026.7.6新规: 盘后固定价格交易至15:30
 
 def is_trading_day(d: date = None) -> bool:
     d = d or date.today()

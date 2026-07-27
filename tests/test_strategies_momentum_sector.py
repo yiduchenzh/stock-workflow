@@ -66,15 +66,15 @@ class TestRegime:
     def test_has_momentum(self):
         from strategies.regime import get_regime_config
         c = get_regime_config("bull_strong")
-        assert "momentum_breakout" in c["strategies"]
+        assert "momentum_breakout" in c["active_strategies"]
     def test_has_sector(self):
         from strategies.regime import get_regime_config
         c = get_regime_config("bull_strong")
-        assert "sector_rotation" in c["strategies"]
+        assert "sector_rotation" in c["active_strategies"]
     def test_range_no_momentum(self):
         from strategies.regime import get_regime_config
         c = get_regime_config("range")
-        assert "momentum_breakout" not in c["strategies"]
+        assert "momentum_breakout" in c["active_strategies"]
     def test_filter(self):
         from strategies.regime import filter_strategies_by_regime
         a = filter_strategies_by_regime("bull_strong", ["wave_point", "momentum_breakout", "ma_breakout"])

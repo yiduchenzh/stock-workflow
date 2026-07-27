@@ -1,5 +1,6 @@
 """盘中突发处理 — 大盘急跌/涨停打开/跌停撬开/缩量预警"""
 import logging
+import numpy as np
 logger = logging.getLogger("aurora.contingency")
 
 def check_contingency(positions: dict, market_status: dict, kline_cache: dict = None) -> list:
@@ -60,5 +61,4 @@ def check_contingency(positions: dict, market_status: dict, kline_cache: dict = 
                     "reason": f"3日跌{three_day_chg:.1f}%+放量{vol_ratio:.1f}x, 恐慌出逃",
                 })
     
-    import numpy as np
     return alerts

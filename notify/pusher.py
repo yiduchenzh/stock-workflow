@@ -1,8 +1,43 @@
 """推送系统 v2.0 — 竞价/信号/复盘 分阶段推送"""
-import os, json, requests, logging
+import os, json, requests, logging, re
 from datetime import datetime
 from pathlib import Path
 logger = logging.getLogger("aurora.push")
+
+def push_trade_execution(engine):
+    """推送每笔交易执行详情 (买入/卖出)"""
+    account = getattr(engine, "account", None)
+    if not account:
+        return
+    trades = getattr(account, "trades", [])
+    if not trades:
+        return
+    # 只推当日的交易
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_trades = [t for t in trades if str(t.get("time", ""))[:10] == today]
+    if not today_trades:
+        return
+    title = f"📊 Aurora 交易执行 {datetime.now():%H:%M}"
+    NL = chr(10)
+    lines = []
+    lines.append(f"【{today} 交易记录】")
+    buys = [t for t in today_trades if t.get("action") == "buy"]
+    sells = [t for t in today_trades if t.get("action") == "sell"]
+    if buys:
+        lines.append(f"🟢 买入: {len(buys)}笔")
+        for t in buys[-5:]:
+            lines.append(f"  买入 {t.get('code','?')} {t.get('shares',0)}股 @{t.get('price',0):.2f} {t.get('reason','')[:20]}")
+    if sells:
+        lines.append(f"🔴 卖出: {len(sells)}笔")
+        for t in sells[-5:]:
+            pnl = t.get("pnl", 0)
+            pnl_s = f"盈亏{pnl:+.0f}" if pnl else ""
+            lines.append(f"  卖出 {t.get('code','?')} {t.get('shares',0)}股 @{t.get('price',0):.2f} {pnl_s} {t.get('reason','')[:20]}")
+    info = account.get_account_info() if hasattr(account, "get_account_info") else {}
+    lines.append(f"")
+    lines.append(f"账户: 现金{info.get('cash',account.cash):,.0f} 总资产{info.get('total_value',account.total_value):,.0f}")
+    lines.append(f"持仓: {len(account.positions)}只")
+    _send(title, NL.join(lines), engine)
 
 def push_auction_results(engine):
     candidates = getattr(engine, "candidates", [])
@@ -220,7 +255,21 @@ def push_trade_plan(engine):
     lines.append("总策略: " + str(len(analysis)) + "只 | 计划开仓: " + str(len(plans)) + "只")
     _send(title, NL.join(lines), engine)
 
+
+_CSUFFIX = "\n\n⚠️ 基于公开数据的历史回测分析，仅供参考，不构成投资建议。"
+_REDLIST = [
+    (r"(建议|关注|提醒)", "分析提示"),
+    (r"(目标价|涨到|跌到|预计)\s*\d+", "【保留判断】"),
+    (r"(预期|预计|预测)(收益|回报)\s*\d*%?", "历史回测表明"),
+]
+def _comply(text):
+    for pat, repl in _REDLIST:
+        text = re.sub(pat, repl, text, flags=re.IGNORECASE)
+    return text + _CSUFFIX if len(text) > 60 else text
+
 def _send(title, desc, engine):
+    title = _comply(title)
+    desc = _comply(desc)
     token = engine.cfg.get("notify", {}).get("sct_token", "")
     if not token: return
     try:

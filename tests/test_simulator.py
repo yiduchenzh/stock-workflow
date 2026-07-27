@@ -26,14 +26,14 @@ def test_avg_cost_includes_fees():
     assert avg > 10.0, f"avg_cost={avg} should include fees (>{10.0})"
 
 def test_sell_pnl_calculation():
-    _clean()
-    acc = SimAccount(1000000)
-    acc.buy("000001", 10.0, 1000)
-    result = acc.sell("000001", 11.0, 1000)
-    assert result.get("success")
-    assert "000001" not in acc.positions
-    assert result.get("success") or result.get("trade", {}).get("pnl", 0) > 0
-
+        _clean()
+        acc = SimAccount(1000000)
+        acc.buy("000001", 10.0, 1000)
+        # A股T+1: 清除today_buys模拟跨日解锁
+        acc.today_buys = {}
+        result = acc.sell("000001", 11.0, 1000)
+        assert result.get("success"), f"sell failed: {result.get('error','')}"
+        assert "000001" not in acc.positions
 def test_total_value():
     _clean()
     acc = SimAccount(1000000)

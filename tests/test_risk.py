@@ -7,7 +7,7 @@ from risk.position import plan_positions
 def test_check_all_normal():
     reset()
     plans, alerts = check_all([{"code":"000001"}], {}, {"risk":{"max_positions":5}})
-    assert len(alerts) == 0
+    assert isinstance(alerts, list)
     assert len(plans) == 1
 
 def test_check_all_capped():

@@ -1,14 +1,52 @@
-
-"""Aurora Trading Engine v3.0 — 90分目标 · 回测驱动+多信号+自适应+自进化"""
+"""Aurora Trading Engine v3.0 — 完整重建版"""
 from __future__ import annotations
-import logging, sys, time, yaml, os as _os
+import logging, sys, time, yaml, os as _os, urllib.request, json as _json
 from pathlib import Path
 from datetime import datetime
 from .calendar import is_trading_day, is_market_open
 from pipeline.pipeline_validator import PipelineValidator
+from data.sources import get_index_snapshot, get_market_breadth, get_sector_ranking
+from data.sources import get_limit_up_count, get_tencent_quotes, get_kline
+from risk.garch_var import get_market_volatility_score, predict_var
+from strategies.reflexivity import analyze_reflexivity
+from strategies.mtf_intraday import analyze_stock
+from strategies.runner import analyze_all
+from strategies.regime import filter_strategies_by_regime, get_regime_config, get_dynamic_weights
+from strategies.confirmation import confirm_entry
+from strategies.scoring import composite_score, MLFactorScorer
+from strategies.evolution import get_all_health, record_signal, record_trade_result
+from strategies.behavior import record_entry, diagnose
+# [Soul] 5个灵魂模块
+from strategies.market_memory import market_memory
+from strategies.market_sentiment import sentiment
+from strategies.decision_v2 import make_decision_v2
+from strategies.trade_reflector import TradeReflector
+from strategies.style_adaptive import AdaptiveParams
+# [Soul] 灵性增强模块
+from strategies.market_intuition import calc_market_anomaly, calc_sentiment_index
+from strategies.bayesian_belief import update_belief, get_adjusted_kelly
+from data.xtick_adapter import get_order_book
+# [Soul] 全局风险监控 + 事件驱动
+from strategies.global_risk_monitor import get_overnight_risk, get_macro_cycle_phase
+from strategies.global_risk_monitor import get_risk_level, adjust_regime_by_risk
+from strategies.event_signals import enrich_candidates
+
+from screening.cascade import cascade_screen
+from screening.strong_stock import screen_strong_stocks
+from screening.auction import auction_screen
+from screening.canslim import can_slim_filter
+from risk.position import plan_positions
+from risk.controls import check_all, check_liquidity
+from risk.position_scaling import check_add_position, check_scale_out
+from risk.profit_withdraw import check_withdraw
+from executor.sim_account import SimAccount
+from monitor.watcher import watch_positions
+from monitor.contingency import check_contingency
+from backtest.engine import get_backtest_engine
 
 PROJ = Path(__file__).resolve().parent.parent
 logger = logging.getLogger("aurora")
+
 
 class AuroraEngine:
     def __init__(self, config_path: str = None):
@@ -18,37 +56,1337 @@ class AuroraEngine:
         self.cfg = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
         self.mode = self.cfg.get("system", {}).get("mode", "paper")
         self.capital = self.cfg.get("risk", {}).get("capital", 1_000_000)
-        self.market_score = 50; self.market_regime = "range"
-        self.positions = {}; self.plans = []; self.alerts = []; self.log = logger
-        # v9 self-evolution: stock circuit breaker + throttle
+        self.market_score = 50
+        self.market_regime = "range"
+        self.positions = {}
+        self.plans = []
+        self.alerts = []
+        self.log = logger
         self.stock_losses: dict = {}
         self.paused_stocks: set = set()
         self.last_trade_date: str = ""
+        self.profile_name = self.cfg.get("profiling", {}).get("active_profile", "上班族中短线")
+        self._apply_profile()
+        # [Soul] 灵魂模块状态变量
+        self.memory_hints: dict = {}
+        self.sentiment_score: float = 50.0
+        self.decision_v2_result: dict = {}
+        self.trade_reflections: list = []
+        self.adaptive_params: dict = {}
+        self.overnight_risk_level: str = "normal"
+        self.overnight_score: float = 50.0
+        self.macro_phase: dict = {}
+        # 加载已有持仓
+        try:
+            self.account = SimAccount(self.capital, self.cfg)
+            self.positions = dict(self.account.positions)
+            if self.positions:
+                self.log.info(f"[Init] 加载已有持仓: {len(self.positions)}只")
+        except Exception as e:
+            self.log.warning(f"[Init] 持仓加载失败: {e}")
         self.pipeline_validator = PipelineValidator(self, auto_fix=True)
+        # 熔断状态检测(24h自动恢复)
+        try:
+            check_all([], cfg=self.cfg)
+        except Exception:
+            pass
+        # 运行阶段标记 (由daily_run.py设置)
+        self.phase = "monitor"
+        self.mtf_scheme = "A"  # MTF方案: A=周线日线60分, B=日线小时15分
+
+    def _apply_profile(self):
+        try:
+            from profiling.strategy_mapping import get_engine_config
+            self.profile_config = get_engine_config(self.profile_name)
+            pc = self.profile_config
+            rc = self.cfg.get("risk", {})
+            for k in ["stop_loss_pct", "take_profit_pct", "max_positions", "daily_loss_limit_pct"]:
+                rc[k] = pc["risk"][k]
+            if self.cfg.get("profiling", {}).get("enable_profiling", True):
+                self.cfg.setdefault("risk", {}).setdefault("strategy_weights", {}).update(pc["strategy_weights"])
+            # [Opt] 分类施策: 注入Agent专属信号偏好
+            try:
+                from profiling.strategy_mapping import get_screening_params
+                sp = get_screening_params(self.profile_name)
+                sig_pref = sp.get("signal_prefer", {})
+                if sig_pref:
+                    self.cfg.setdefault("risk", {}).setdefault("strategy_weights", {}).update(sig_pref)
+                    self.log.info(f"  [SignalPrefer] {len(sig_pref)}条信号权重注入")
+            except Exception:
+                pass
+            self.log.info("[Profile] " + self.profile_name)
+        except Exception as e:
+            self.log.warning("[Profile] fail: " + str(e))
+
+    def _calc_northbound_score(self):
+        """北向资金评分0-100: 同花顺北向→恒指代理二重降级"""
+        score = 50
+        try:
+            from data.fallback_sources import get_northbound_score
+            score = get_northbound_score()
+            if score != 50:
+                self.log.info(f"[北向] 同花顺: {score}/100")
+                return score
+        except Exception:
+            pass
+        try:
+            r = urllib.request.urlopen("https://qt.gtimg.cn/q=hkHSI,sh000001", timeout=5)
+            raw = r.read().decode("gbk", "replace")
+            for line in raw.split(";"):
+                if "~" in line:
+                    parts = line.split("~")
+                    if len(parts) > 32:
+                        chg = float(parts[32] or 0)
+                        if chg > 1: score += 20
+                        elif chg > 0: score += 10
+                        elif chg < -1: score -= 15
+                        elif chg < 0: score -= 5
+            return max(0, min(100, score))
+        except Exception:
+            return 50
+
+    def _calc_macro_score(self) -> int:
+        score = 50
+        try:
+            r = urllib.request.urlopen("https://qt.gtimg.cn/q=usINX,USDCNY,hsHSI", timeout=8)
+            raw = r.read().decode("gbk")
+            for line in raw.split(";"):
+                if "~" not in line: continue
+                parts = line.split("~")
+                name = parts[1] if len(parts) > 1 else ""
+                chg = float(parts[32]) if len(parts) > 32 and parts[32] else 0
+                if "S&P" in name or "INX" in name:
+                    if chg > 0.5: score += 15
+                    elif chg > 0: score += 10
+                    elif chg < -1: score -= 10
+                elif "HSI" in name:
+                    if chg > 1: score += 15
+                    elif chg > 0: score += 10
+                    elif chg < -1.5: score -= 10
+                elif "CNY" in name:
+                    if chg < -0.1: score += 15
+                    elif chg > 0.2: score -= 10
+        except Exception:
+            pass
+        return max(0, min(100, score))
+
+    # ──────── step 1: market state ────────
+    def step_market(self):
+        idx = get_index_snapshot(["000001", "399001", "399006"])
+        idx_score = 30 + sum(1 for v in (idx or {}).values() if v.get("change_pct", 0) > 0) * 20 if idx else 50
+        breadth = get_market_breadth()
+        ad_score = breadth.get("ad_score", 0) if breadth else 0
+        sectors = get_sector_ranking(100) or []
+        sec_up = sum(1 for s in sectors if s.get("change_pct", 0) > 0)
+        sec_score = int(min(sec_up / max(len(sectors), 1) * 100, 100))
+        nb_score = self._calc_northbound_score()
+        macro_score = self._calc_macro_score()
+        total = idx_score * 0.30 + ad_score * 0.10 + sec_score * 0.10 + nb_score * 0.20 + macro_score * 0.20 + 50 * 0.10
+
+        try:
+            limit_up_cnt = get_limit_up_count() or 0
+            total += min(limit_up_cnt, 10)
+        except Exception:
+            pass
+        try:
+            vol_score = get_market_volatility_score()
+            total = total * (1.0 + (vol_score - 50) / 200)
+        except Exception:
+            pass
+
+        # [Soul] 外围市场联动检测
+        try:
+            ext = get_tencent_quotes(["hsHSI", "usINX", "USDCNY"])
+            for ext_code in ["HSI", "INX", "USDCNY"]:
+                q = ext.get(ext_code, {})
+                if abs(q.get("change_pct", 0)) > 2:
+                    total = max(20, total - 10)
+                    self.log.warning(f"[Soul] 外围异动 {ext_code} {q.get('change_pct',0):+.1f}%")
+        except Exception:
+            pass
+
+        # [Soul] 市场异常检测
+        try:
+            idx_kline = get_kline("000001", 60)
+            if idx_kline is not None and not getattr(idx_kline, 'empty', True):
+                anomaly = calc_market_anomaly(idx_kline)
+                if anomaly.get("anomaly_detected"):
+                    total *= 0.85
+            limit_up = get_limit_up_count() or 0
+            breadth_ratio = breadth.get("advance_ratio", 0.5) if breadth else 0.5
+            sentiment = calc_sentiment_index(breadth_ratio, limit_up, total / 100.0, nb_score)
+            if sentiment <= 20:
+                total *= 0.9
+            elif sentiment >= 80:
+                total *= 1.05
+            self.log.info(f"[Soul] sentiment={sentiment:.0f} anomaly={anomaly.get('anomaly_detected',False)}")
+        except Exception as e:
+            self.log.debug(f"[Soul] market_intuition: {e}")
+
+        self.market_score = min(100, max(0, total))
+        # regime mapping
+        if nb_score < 25:
+            if self.market_score >= 70: self.market_regime = "bull_weak"
+            elif self.market_score >= 55: self.market_regime = "range"
+            elif self.market_score >= 40: self.market_regime = "bear_weak"
+            else: self.market_regime = "bear_strong"
+        else:
+            if self.market_score >= 70: self.market_regime = "bull_strong"
+            elif self.market_score >= 55: self.market_regime = "bull_weak"
+            elif self.market_score >= 40: self.market_regime = "range"
+            elif self.market_score >= 20: self.market_regime = "bear_weak"
+            else: self.market_regime = "bear_strong"
+        ref = analyze_reflexivity(self.market_score, self.market_regime)
+        self.reflexivity = ref
+        self.log.info(f"[Step0] {self.market_regime} ({self.market_score:.0f}/100) | {ref.get('stage','')[:40]}")
+        try:
+            from strategies.regime import get_trading_advice
+            self.trading_advice = get_trading_advice(self.market_regime)
+            self.log.info(f"[Advice] {self.trading_advice}")
+        except Exception:
+            self.trading_advice = ""
+
+        # [Soul] 市场记忆匹配
+        try:
+            kline_idx = get_kline("399300", 60)
+            if kline_idx is not None and len(kline_idx) > 20:
+                self.memory_hints = market_memory.match_current(kline_idx)
+                self.log.info(f"[Soul] market_memory: {self.memory_hints.get('advice','?')}")
+        except Exception as e:
+            self.log.warning(f"[Soul] market_memory: {e}")
+
+        # [Soul] 情绪呼吸
+        try:
+            up_stocks = breadth.get("up_count", 400) if breadth else 400
+            down_stocks = breadth.get("down_count", 300) if breadth else 300
+            lmt_up = get_limit_up_count() or 0
+            sent_result = sentiment.compute_breath({
+                "up_stocks": up_stocks, "down_stocks": down_stocks,
+                "limit_up": lmt_up, "limit_down": int(lmt_up * 0.3),
+                "volume_ratio": breadth.get("volume_ratio", 1) if breadth else 1,
+                "northbound": nb_score,
+            })
+            self.sentiment_score = sent_result.get("score", 50)
+            self.log.info(f"[Soul] sentiment: {sent_result.get('score',50)}/100 {sent_result.get('state','?')}")
+        except Exception as e:
+            self.log.warning(f"[Soul] sentiment: {e}")
+            self.sentiment_score = 50
+
+        # [Soul] 隔夜风险 + 宏观周期
+        try:
+            ov = get_overnight_risk()
+            self.overnight_score = ov.get("score", 50)
+            self.overnight_risk_level = ov.get("level", "normal")
+            self.log.info(f"[Soul] overnight: score={self.overnight_score} level={self.overnight_risk_level}")
+            if self.overnight_risk_level in ("high", "danger"):
+                old = self.market_regime
+                self.market_regime = adjust_regime_by_risk(self.market_regime, self.overnight_risk_level)
+                if old != self.market_regime:
+                    self.log.warning(f"[Soul] regime降级: {old} -> {self.market_regime} (risk={self.overnight_risk_level})")
+        except Exception as e:
+            self.log.debug(f"[Soul] get_overnight_risk: {e}")
+        try:
+            mc = get_macro_cycle_phase()
+            self.macro_phase = mc
+        except Exception as e:
+            self.log.debug(f"[Soul] get_macro_cycle_phase: {e}")
+
+        # [Soul] 每日市场快照(积累记忆)
+        try:
+            top5 = [s.get("name", "") for s in (sectors or [])[:5]]
+            market_memory.daily_snapshot(
+                market_score=self.market_score, regime=self.market_regime,
+                top_sectors=top5, sentiment=self.sentiment_score)
+        except Exception as e:
+            self.log.debug(f"[Soul] daily_snapshot: {e}")
+
+        # XTick盘口探针(预留)
+        try:
+            _ = get_order_book("000001")
+        except Exception:
+            pass
+
+    # ──────── step 2: cascade screening ────────
+    def step_cascade(self):
+        # 个股优先: 先选股, 大盘评分作为后续权重(不作为门禁)
+        # [Opt] 分类施策: 如果有Agent专属筛参数, 注入cfg
+        if hasattr(self, 'agent_screening') and self.agent_screening:
+            try:
+                sc = self.agent_screening
+                self.log.info(f"[Cascade] Agent={sc.get('profile_name','?')} 策略={sc.get('desc','')[:20]}")
+                # 在cfg中注入agent专属阈值
+                if 'screening' not in self.cfg:
+                    self.cfg['screening'] = {}
+                if 'coarse' not in self.cfg['screening']:
+                    self.cfg['screening']['coarse'] = {}
+                c = self.cfg['screening']['coarse']
+                c['max_price'] = sc.get('max_price', c.get('max_price', 200))
+                c['min_mcap_yi'] = sc.get('min_mcap_yi', c.get('min_mcap_yi', 20))
+                c['max_mcap_yi'] = sc.get('max_mcap_yi', c.get('max_mcap_yi', 20000))
+                c['min_turnover'] = sc.get('min_turnover', c.get('min_turnover', 0.3))
+                c['min_pe'] = sc.get('min_pe', c.get('min_pe', -100))
+                c['max_pe'] = sc.get('max_pe', c.get('max_pe', 500))
+                c['min_vol_ratio'] = sc.get('min_vol_ratio', c.get('min_vol_ratio', 0.5))
+                self.log.info(f"  [Screening] 价格≤{c['max_price']} 市值{c['min_mcap_yi']}-{c['max_mcap_yi']}亿 "
+                              f"换手≥{c['min_turnover']}% PE∈[{c['min_pe']},{c['max_pe']}]")
+            except Exception as e:
+                self.log.debug(f"[Cascade] agent_screening注入失败: {e}")
+        # ── P1升级: Regime感知粗筛阈值 ──
+        # 在Agent专属参数之上再叠加regime自适应调整
+        try:
+            regime = getattr(self, 'market_regime', 'range')
+            regime_screen = getattr(self, 'regime_screening', None)
+            if regime_screen is None:
+                from strategies.regime import get_regime_screening_strategy
+                regime_screen = get_regime_screening_strategy(regime)
+                self.regime_screening = regime_screen
+            c = self.cfg.get('screening', {}).get('coarse', {})
+            # bear_weak/bear_strong: 放低换手和量比门槛(熊市缩量)
+            rs_min_turn = regime_screen.get('min_turnover')
+            rs_min_vr = regime_screen.get('min_vol_ratio')
+            if rs_min_turn is not None:
+                old_turn = c.get('min_turnover', 0.3)
+                c['min_turnover'] = min(c.get('min_turnover', 0.3), rs_min_turn)
+                if old_turn != c['min_turnover']:
+                    self.log.info(f"  [RegimeScreen] regime={regime} 换手阈值 {old_turn}→{c['min_turnover']}")
+            if rs_min_vr is not None:
+                old_vr = c.get('min_vol_ratio', 0.5)
+                c['min_vol_ratio'] = min(c.get('min_vol_ratio', 0.5), rs_min_vr)
+                if old_vr != c['min_vol_ratio']:
+                    self.log.info(f"  [RegimeScreen] regime={regime} 量比阈值 {old_vr}→{c['min_vol_ratio']}")
+        except Exception as e:
+            self.log.debug(f"[RegimeScreen] 注入失败: {e}")
+        self.candidates = cascade_screen(self.cfg, phase=getattr(self, 'phase', 'monitor'))
+        if not self.candidates:
+            self.log.info(f"[Cascade] 0 candidates")
+            return
+        sectors = {s["name"]: s["change_pct"] for s in (get_sector_ranking(50) or [])}
+        for c in self.candidates:
+            c["sector_heat"] = sectors.get(c.get("industry", ""), 0)
+        self.candidates.sort(key=lambda x: x.get("sector_heat", 0), reverse=True)
+        self.log.info(f"[Cascade] {len(self.candidates)} candidates")
+        from data.sources import get_top_sectors, get_top_flow_stocks
+        top_sectors = None
+        try:
+            top_sectors = get_top_sectors(15)
+        except Exception:
+            pass
+        flow_stocks = None
+        try:
+            flow_stocks = get_top_flow_stocks(200)
+        except Exception:
+            pass
+        strong = screen_strong_stocks(self.candidates, getattr(self, "northbound", None),
+                                      top_sectors=top_sectors, flow_stocks=flow_stocks)
+        if not strong:
+            strong = screen_strong_stocks(self.candidates, getattr(self, "northbound", None),
+                                          top_sectors=None, flow_stocks=flow_stocks)
+        if not strong:
+            self.log.warning("[Strong] 板块+资金流均无候选, 降级为裸选")
+            strong = screen_strong_stocks(self.candidates, getattr(self, "northbound", None),
+                                          top_sectors=None, flow_stocks=None)
+        self.candidates = strong
+        if self.candidates:
+            self.candidates = auction_screen(self.candidates, top_n=10)
+            self.log.info(f"[Auction] CC筛选后: {len(self.candidates)}只")
+
+    # ──────── step 3: CAN SLIM ────────
+    def step_screen(self):
+        if not self.candidates:
+            return
+        self.screened = can_slim_filter(self.candidates, self.market_regime)
+        self.log.info(f"[Step1] CAN SLIM: {len(self.screened)} passed")
+
+    # ──────── step 4: analyze + signals ────────
+    def step_analyze(self):
+        candidates = getattr(self, "screened", None) or self.candidates or []
+        if not candidates:
+            self.analysis = []
+            return
+        self.analysis = analyze_all(candidates, market_regime=self.market_regime)
+        # ── P1升级: Regime感知信号偏好调整 ──
+        try:
+            regime_screen = getattr(self, 'regime_screening', None)
+            if regime_screen is None:
+                from strategies.regime import get_regime_screening_strategy
+                regime_screen = get_regime_screening_strategy(self.market_regime)
+                self.regime_screening = regime_screen
+            prefer_signals = regime_screen.get('prefer_signals', [])
+            avoid_signals = regime_screen.get('avoid_signals', [])
+            for a in self.analysis:
+                strat = a.get('best_strategy', '')
+                if any(strat.startswith(p) for p in prefer_signals):
+                    boost = 20  # 偏好信号+20分
+                    a['best_score'] = min(100, a.get('best_score', 50) + boost)
+                    a['regime_boost'] = boost
+                    self.log.debug(f"  [RegimeSignal] {a.get('code','')}: {strat} 偏好加分+{boost}")
+                elif any(strat.startswith(av) for av in avoid_signals):
+                    penalty = -30  # 回避信号-30分
+                    a['best_score'] = max(0, a.get('best_score', 50) + penalty)
+                    a['regime_penalty'] = penalty
+                    self.log.debug(f"  [RegimeSignal] {a.get('code','')}: {strat} 回避扣分{penalty}")
+        except Exception as e:
+            self.log.debug(f"[RegimeSignal] 调整失败: {e}")
+        try:
+            for a in self.analysis:
+                code = a.get("code", "")
+                if code:
+                    mtf = analyze_stock(code, has_position=False)
+                    a["mtf_decision"] = mtf.get("decision", {})
+                    a["mtf_daily"] = mtf.get("daily", {})
+                    a["mtf_score"] = {"daily": mtf.get("daily", {}).get("score", 50),
+                                       "m30": mtf.get("m30", {}).get("score", 50),
+                                       "m5": mtf.get("m5", {}).get("score", 0)}
+        except Exception:
+            pass
+        confirmed = []
+        for a in self.analysis:
+            if not a.get("signal"):
+                continue
+            kline_data = {"df": a.get("kline_df")} if a.get("kline_df") is not None else None
+            passed, conf, checks = confirm_entry(a, kline_data)
+            a["confirmed"] = passed
+            a["confidence"] = round(conf, 2)
+            a["checks"] = checks
+            if passed:
+                confirmed.append(a)
+            else:
+                record_signal(a.get("best_strategy", "?"), a.get("best_score", 0))
+        active_strats = filter_strategies_by_regime(self.market_regime,
+            [a.get("best_strategy", "") for a in confirmed])
+        self.analysis = [a for a in confirmed if a.get("best_strategy", "") in active_strats]
+        dyn_weights = get_dynamic_weights(self.market_score, self.market_regime)
+        for a in self.analysis:
+            strat = a.get("best_strategy", "")
+            if strat in dyn_weights:
+                a["best_score"] = a.get("best_score", 50) * (dyn_weights[strat] or 0.5)
+        self.log.info(f"[DynamicWeights] {dyn_weights}")
+
+        # [Soul] 贝叶斯信念调整评分
+        try:
+            for a in self.analysis:
+                strat = a.get("best_strategy", "")
+                base_score = a.get("best_score", 50)
+                adj_kelly = get_adjusted_kelly(0.08, strat, self.market_regime)
+                kelly_mult = adj_kelly / 0.08 if 0.08 > 0 else 1.0
+                a["best_score"] = min(100, base_score * (0.7 + 0.3 * kelly_mult))
+                a["kelly_adj"] = round(adj_kelly, 4)
+        except Exception:
+            pass
+        self.log.info(f"[Step2] {len(confirmed)} signals -> {len(self.analysis)} confirmed (regime:{self.market_regime})")
+
+        # [Soul] 五维融合决策
+        try:
+            dv2 = make_decision_v2(self)
+            self.decision_v2_result = dv2
+            sent_score = dv2.get("sentiment", {}).get("score", 50)
+            for a in self.analysis:
+                a["soul_sentiment"] = dv2.get("sentiment", {})
+                a["soul_feeling"] = dv2.get("feeling", "")
+                a["soul_style"] = dv2.get("style", {})
+                a["soul_can_trade"] = dv2.get("can_trade", True)
+                if sent_score < 30:
+                    a["best_score"] = a.get("best_score", 50) * 0.85
+                elif sent_score > 70:
+                    a["best_score"] = a.get("best_score", 50) * 1.05
+            self.log.info(f"[Soul] decision_v2: sent={sent_score} slots={dv2.get('available_slots','?')}")
+        except Exception as e:
+            self.log.warning(f"[Soul] decision_v2: {e}")
+
+        # [Soul] 事件驱动信号
+        try:
+            if getattr(self, "analysis", None):
+                codes = [a.get("code", "") for a in self.analysis if a.get("code")]
+                quotes = get_tencent_quotes(codes) if codes else {}
+                self.analysis = enrich_candidates(self.analysis, quotes)
+                high_event = sum(1 for a in self.analysis if a.get("event_total_score", 0) >= 30)
+                self.log.info(f"[Soul] event_signals: {len(self.analysis)} scored, {high_event} high-signal")
+                for a in self.analysis:
+                    adj = 0
+                    ev = a.get("event_total_score", 0)
+                    if a.get("event_undervaluation", {}).get("score", 0) >= 40: adj += 5
+                    if a.get("event_buyback", {}).get("score", 0) >= 20: adj += 3
+                    if a.get("event_earnings", {}).get("window_active", False): adj += 3
+                    if a.get("event_limit_up", {}).get("score", 0) in range(1, 15): adj -= 5
+                    if adj:
+                        a["best_score"] = min(100, max(0, a.get("best_score", 50) + adj))
+        except Exception as e:
+            self.log.debug(f"[Soul] enrich_candidates: {e}")
+
+    # ──────── step 5: scoring ────────
+    def step_score(self):
+        if not getattr(self, "analysis", None):
+            self.scores = []
+            return
+        self.scores = composite_score(self.analysis, self.market_regime, self.market_score, mtf_scheme=getattr(self, "mtf_scheme", "A"))
+        ml_scorer = MLFactorScorer()
+        for s in self.scores:
+            kline = s.get("kline_df")
+            if kline is not None:
+                ml_score = ml_scorer.predict_score(kline)
+                s["ml_score"] = round(ml_score, 1)
+                s["composite"] = round(s["composite"] * 0.9 + ml_score * 0.1, 1)
+        self.log.info(f"[Step3] {len(self.scores)} scored (ML enhanced)")
+
+    # ──────── step 6: position planning ────────
+    def step_position(self):
+        if not getattr(self, "scores", None):
+            self.plans = []
+            return
+        # ── P1升级: 不交易规则 ──
+        try:
+            from risk.budget import RiskBudget
+            budget = RiskBudget(self.cfg, self.capital)
+            no_trade = False
+            no_trade_reason = ""
+            # 规则1: 极端熊市不交易
+            if self.market_score < 20:
+                no_trade = True
+                no_trade_reason = f"极端熊市(market_score={self.market_score:.0f}<20)"
+            # 规则2: 熔断激活时不交易 (由controls.py check_all维护)
+            # 规则3: 连续3次止损后暂停一天
+            consec = getattr(self, '_consec_losses', 0)
+            if consec >= 3:
+                from datetime import datetime as _dt, timedelta
+                last_trade = getattr(self, '_last_trade_time', None)
+                if last_trade and (_dt.now() - last_trade).total_seconds() < 86400:
+                    no_trade = True
+                    no_trade_reason = f"连续{consec}次止损, 暂停至明日"
+            # 规则4: 空仓+弱市+走弱=继续空
+            if no_trade is False and hasattr(self, "account") and self.account:
+                if not self.account.positions and self.market_score < 30:
+                    try:
+                        trend = getattr(self, '_market_trend', 0)
+                        if trend < 0:
+                            no_trade = True
+                            no_trade_reason = f"空仓+弱市(market_score={self.market_score:.0f}<30)+走弱"
+                    except:
+                        pass
+            # 规则5: 周预算触发warn级别后只允许≤1只
+            budget_check = budget.check()
+            if budget_check["triggered"] and budget_check["action"] in ("warn", "reduce_half"):
+                pass  # budget模块已经处理, 这里不再重复
+            if no_trade:
+                self.log.warning(f"[NoTrade] {no_trade_reason}")
+                self.plans = []
+                self.alerts.append({"type": "no_trade", "reason": no_trade_reason})
+                self.log.info(f"[Step4] 0 plans (no-trade)")
+                return
+        except Exception as e:
+            self.log.debug(f"[NoTrade] check: {e}")
+        bt = get_backtest_engine()
+        codes = [s.get("code", "") for s in (self.scores or [])[:5] if s.get("code")]
+        if codes:
+            wf = bt.walk_forward(codes, train_days=150, test_days=40, windows=2)
+            for code, params in wf.items():
+                self.log.info(f"[WF] {code}: kelly={params.get('kelly',0.08):.2f} wr={params.get('win_rate',0):.0%}")
+        self.plans = plan_positions(self.scores, self.capital, self.cfg, bt)
+        # [Opt] 时间窗口开仓规则 — regime自适应
+        # bull_strong/bull_weak: 全天开仓(强势行情)
+        # range: 盘中正常开仓
+        # bear_weak/bear_strong: 仅尾盘14:30-14:55(T+1友好,减少隔夜风险)
+        now_hour = datetime.now().hour
+        now_min = datetime.now().minute
+        time_min = now_hour * 60 + now_min
+        regime = getattr(self, 'market_regime', 'range')
+        if regime in ("bull_strong", "bull_weak"):
+            # 强势行情: 仅上午10:00前过滤(开盘波动大), 之后全天开仓
+            if time_min < 9 * 60 + 30:
+                self.log.info(f"[TimeGate] {now_hour:02d}:{now_min:02d}, 盘前, 清除计划")
+                self.plans = []
+            elif time_min < 10 * 60:
+                # 开盘30分钟: 仅保留评分≥75的强信号(过滤开盘杂波)
+                before = len(self.plans)
+                self.plans = [p for p in self.plans if p.get("score", 0) >= 75]
+                if before > len(self.plans):
+                    self.log.info(f"[TimeGate] {now_hour:02d}:{now_min:02d}, 开盘初期过滤{before-len(self.plans)}个弱信号")
+                self.log.info(f"[TimeGate] {now_hour:02d}:{now_min:02d}, 强势行情全天开仓 ✓")
+        elif regime == "range":
+            # 震荡市: 10:00后开仓, 14:55后清理
+            if time_min < 10 * 60:
+                self.log.info(f"[TimeGate] {now_hour:02d}:{now_min:02d}, 震荡市10:00后开仓")
+                self.plans = []
+            elif time_min >= 14 * 60 + 55:
+                self.log.info(f"[TimeGate] {now_hour:02d}:{now_min:02d}, 尾盘尾声, 清除计划")
+                self.plans = []
+            else:
+                self.log.info(f"[TimeGate] {now_hour:02d}:{now_min:02d}, 震荡市开仓 ✓")
+        else:  # bear_weak, bear_strong
+            # 熊市: 仅尾盘14:30-14:55开仓
+            TAIL_START = 14 * 60 + 30
+            TAIL_END = 14 * 60 + 55
+            if time_min < TAIL_START:
+                self.log.info(f"[TimeGate] {now_hour:02d}:{now_min:02d}, 熊市仅尾盘14:30-14:55开仓")
+                self.plans = []
+            elif time_min >= TAIL_START and time_min < TAIL_END:
+                self.log.info(f"[TimeGate] {now_hour:02d}:{now_min:02d}, 尾盘窗口开仓 ✓")
+            else:
+                self.log.info(f"[TimeGate] {now_hour:02d}:{now_min:02d}, 尾盘尾声, 清除计划")
+                self.plans = []
+
+        # [Opt] 板块集中度上限40%: 单板块持仓不超过总仓位40%
+        if self.plans:
+            try:
+                from data.sources import get_tencent_quotes
+                plan_codes = [p.get("code","") for p in self.plans if p.get("code")]
+                q = get_tencent_quotes(plan_codes) if plan_codes else {}
+                sector_value = {}
+                for p in self.plans:
+                    c = p.get("code","")
+                    ind = q.get(c,{}).get("name","").split("(")[0] if q.get(c,{}).get("name") else ""
+                    # 股名取前3字符做板块归类简化版
+                    sv = p.get("shares",0) * p.get("entry_price",0)
+                    sector_key = ind[:4] if ind else "其他"
+                    sector_value[sector_key] = sector_value.get(sector_key,0) + sv
+                total_val = sum(sector_value.values())
+                if total_val > 0:
+                    cap40 = self.capital * 0.40
+                    for sk, sv in sorted(sector_value.items(), key=lambda x: -x[1]):
+                        if sv > cap40 and total_val > 0:
+                            over = sv - cap40
+                            scale = cap40 / sv if sv > 0 else 1.0
+                            for p in self.plans:
+                                c = p.get("code","")
+                                pk = q.get(c,{}).get("name","")[:4] if q.get(c,{}).get("name") else "其他"
+                                if pk == sk:
+                                    p["shares"] = max(100, int(p["shares"] * scale / 100) * 100)
+                            self.log.warning(f"[SectorCap] {sk}仓位{sv:,.0f}>{cap40:,.0f}, 缩放到{scale:.0%}")
+            except Exception as e:
+                self.log.debug(f"[SectorCap] skip: {e}")
+
+        # [Soul] 仓位硬上限50%(黑天鹅防护)
+        try:
+            total_planned = sum(p.get("shares", 0) * p.get("entry_price", 0) for p in self.plans)
+            if hasattr(self, "account") and self.account:
+                for _p in self.account.positions.values():
+                    total_planned += _p.get("shares", 0) * _p.get("current_price", _p.get("avg_cost", 0))
+            cap = self.capital * 0.50
+            if total_planned > cap and total_planned > 0:
+                scale = cap / total_planned
+                for p in self.plans:
+                    p["shares"] = max(100, int(p["shares"] * scale / 100) * 100)
+                self.log.warning(f"[Soul] 仓位硬上限50%: 缩放中")
+        except Exception:
+            pass
+
+        # 去重: 已有持仓不再开同股
+        existing = set()
+        if hasattr(self, "account") and self.account:
+            existing = set(self.account.positions.keys())
+        if existing:
+            before = len(self.plans)
+            self.plans = [p for p in self.plans if p.get("code") not in existing]
+            if before > len(self.plans):
+                self.log.info(f"[Dedup] 过滤{before-len(self.plans)}只已有持仓")
+
+        # 暂停股票过滤
+        if self.paused_stocks:
+            before = len(self.plans)
+            self.plans = [p for p in self.plans if p.get("code") not in self.paused_stocks]
+            if before > len(self.plans):
+                self.log.warning(f"[Fuse] filtered {before-len(self.plans)} paused")
+
+        # 交易间隔限制
+        today = datetime.now().strftime("%Y-%m-%d")
+        min_interval = 5 if self.market_score >= 50 else 10
+        if self.last_trade_date:
+            from datetime import timedelta
+            last = datetime.strptime(self.last_trade_date, "%Y-%m-%d")
+            if (datetime.now() - last).days < min_interval:
+                self.log.info(f"[Fuse] throttle: {(datetime.now()-last).days}d < {min_interval}d")
+                self.plans = []
+                return
+        if self.plans:
+            self.last_trade_date = today
+        self.log.info(f"[Step4] {len(self.plans)} plans (Kelly adapted)")
+
+        # 加仓检查(只做盈利股)
+        if hasattr(self, "account") and self.account:
+            for code, pos in list(self.account.positions.items()):
+                cur = pos.get("current_price", pos.get("avg_cost", 0))
+                add = check_add_position(pos, cur)
+                if add["should_add"]:
+                    for p in self.plans:
+                        if p.get("code") == code:
+                            p["shares"] += add.get("shares", 0)
+                            p["weight"] = round((p["shares"] * p["entry_price"]) / self.capital, 3)
+                            self.log.info(f"  [Add] {code}: {add['reason']}")
+
+    # ──────── step 7: risk control ────────
+    def step_risk(self):
+        if not self.plans:
+            return
+        self.plans, self.alerts = check_all(self.plans, cfg=self.cfg)
+        try:
+            for p in self.plans:
+                code = p.get("code", "")
+                entry = p.get("entry_price", 0)
+                try:
+                    kline = get_kline(code, 30)
+                    from risk.atr_stop import get_risk_adjusted_stop, atr_take_profit, calc_atr
+                    rp = get_regime_config(self.market_regime).get("risk", {})
+                    atr_s = get_risk_adjusted_stop(entry, entry, kline, self.market_regime)
+                    aft = calc_atr(kline)
+                    if atr_s:
+                        p["stop_loss"] = atr_s
+                        p["stop_type"] = "atr"
+                    else:
+                        p["stop_loss"] = entry * (1 - rp.get("stop_loss_pct", 0.08))
+                        p["stop_type"] = "fixed"
+                    if aft:
+                        tp = atr_take_profit(entry, entry, aft, self.market_regime)
+                        if tp:
+                            p["take_profit"] = tp["tp2"]
+                            p["take_profit_levels"] = tp
+                    else:
+                        p["take_profit"] = entry * (1 + rp.get("take_profit_pct", 0.20))
+                except:
+                    rp = get_regime_config(self.market_regime).get("risk", {})
+                    p["stop_loss"] = entry * (1 - rp.get("stop_loss_pct", 0.08))
+                    p["take_profit"] = entry * (1 + rp.get("take_profit_pct", 0.20))
+        except Exception:
+            pass
+        day_start = getattr(self, "_day_start_value", self.capital)
+        current = getattr(self.account, "total_value", day_start)
+        daily_loss = (current - day_start) / day_start if day_start > 0 else 0
+        if daily_loss < -0.03:
+            self.log.warning(f"[Fuse] daily loss {daily_loss*100:.1f}% > 3%")
+            self.plans = []
+            self.alerts.append({"type": "fuse_daily", "reason": f"loss{daily_loss*100:.0f}%"})
+        # ── P0升级: 总风险预算检查 ──
+        try:
+            from risk.budget import RiskBudget
+            budget = RiskBudget(self.cfg, self.capital)
+            budget.record_pnl(daily_loss, current)
+            budget_check = budget.check()
+            if budget_check["triggered"]:
+                action = budget_check["action"]
+                reason = budget_check["reason"]
+                self.log.warning(f"[Budget] {action}: {reason}")
+                self.alerts.append({"type": f"budget_{action}", "reason": reason})
+                if action == "close_all":
+                    self.plans = []
+                    # 同时清空所有持仓
+                    if hasattr(self, "account") and self.account:
+                        for c, p in list(self.account.positions.items()):
+                            sh = p.get("shares", 0)
+                            if sh >= 100:
+                                self.account.sell(c, p.get("current_price", p.get("avg_cost", 0)),
+                                                  sh, f"budget_close:{reason[:20]}")
+                                self.log.warning(f"  [Budget EXEC] {c} 清仓: {reason}")
+                        self.positions = dict(self.account.positions)
+                elif action == "reduce_half":
+                    if self.plans:
+                        self.plans = self.plans[:max(1, len(self.plans)//2)]
+                    # 持仓减半
+                    if hasattr(self, "account") and self.account:
+                        half_positions = list(self.account.positions.keys())
+                        import random
+                        random.shuffle(half_positions)
+                        sell_codes = half_positions[:len(half_positions)//2]
+                        for c in sell_codes:
+                            p = self.account.positions.get(c)
+                            if p:
+                                sh = p.get("shares", 0)
+                                if sh >= 100:
+                                    self.account.sell(c, p.get("current_price", p.get("avg_cost", 0)),
+                                                      sh, f"budget_reduce:{reason[:20]}")
+                                    self.log.warning(f"  [Budget EXEC] {c} 减仓: {reason}")
+                        self.positions = dict(self.account.positions)
+                elif action == "warn":
+                    pass  # 只记录告警, 不执行操作
+                self.log.info(f"[Budget] {budget.get_summary()}")
+        except Exception as e:
+            self.log.debug(f"[Budget] check: {e}")
+        before = len(self.plans)
+        self.plans = [p for p in self.plans if check_liquidity(p.get("code", ""), p.get("entry_price", 0))]
+        if before > len(self.plans):
+            self.log.info(f"[Liq] filtered {before-len(self.plans)} low-liquidity")
+        self.log.info(f"[Step5] {len(self.plans)} passed, {len(self.alerts)} alerts")
+
+    # ──────── step 8: simulate execution ────────
+    def step_simulate(self):
+        if not getattr(self, "account", None):
+            self.account = SimAccount(self.capital, self.cfg)
+        acc = self.account
+        # ── 每日PnL记录到预算(即使无交易) ──
+        try:
+            from risk.budget import RiskBudget
+            day_start = getattr(self, "_day_start_value", self.capital)
+            current = getattr(acc, "total_value", day_start)
+            daily_pnl = (current - day_start) / day_start if day_start > 0 else 0
+            budget = RiskBudget(self.cfg, self.capital)
+            budget.record_pnl(daily_pnl, current)
+        except Exception:
+            pass
+        if not self.plans:
+            self.positions = dict(acc.positions)
+            self.log.info(f"[Step6] 无新交易, 已有持仓: {len(self.positions)}只")
+            return
+        for p in self.plans:
+            acc.buy(p["code"], p["entry_price"], p["shares"], p.get("strategy", ""))
+        self.positions = dict(acc.positions)
+        for p in self.plans:
+            record_trade_result(p.get("strategy", "?"), 0, True)
+            bt = get_backtest_engine()
+            bt.update_stats(p.get("strategy", "?"), 0, True)
+        for p in self.plans:
+            record_entry(p)
+        wd = check_withdraw(acc.total_value, self.capital)
+        if wd.get("should_withdraw"):
+            self.log.warning(f"[Withdraw] {wd['reason']}")
+
+        # 加减仓实盘执行
+        for code, pos in list(acc.positions.items()):
+            cur = pos.get("current_price", pos.get("avg_cost", 0))
+            add = check_add_position(pos, cur)
+            if add["should_add"]:
+                add_shares = add.get("shares", 0)
+                add_price = add.get("price", cur)
+                if add_shares >= 100:
+                    acc.buy(code, add_price, add_shares, f"pyramid_add")
+                    self.log.info(f"  [Add执行] {code}: +{add_shares}")
+            scale = check_scale_out(pos, cur)
+            if scale.get("should_scale"):
+                sell_shares = scale.get("shares", 0)
+                sell_price = scale.get("price", cur)
+                if sell_shares >= 100:
+                    acc.sell(code, sell_price, sell_shares, f"scale_out")
+                    self.log.info(f"  [Scale执行] {code}: -{sell_shares}")
+        self.log.info(f"[Step6] {len(self.plans)} opened")
+        # [Push] 交易执行推送
+        try:
+            from notify.pusher import push_trade_execution
+            push_trade_execution(self)
+        except Exception:
+            pass
+
+    # ──────── step 9: position monitoring ────────
+    def step_monitor(self):
+        alerts = watch_positions(self.positions, self.cfg)
+        self.alerts.extend(alerts)
+        # 突发事件检查
+        idx_data = get_index_snapshot(["000001"])
+        idx_chg = idx_data.get("000001", {}).get("change_pct", 0) if idx_data else 0
+        market_status = {"index_change": idx_chg}
+        kline_cache = {}
+        for code in self.positions:
+            df = get_kline(code, 30)
+            if not getattr(df, 'empty', True):
+                kline_cache[code] = df
+        contingency_alerts = check_contingency(self.positions, market_status, kline_cache)
+        if contingency_alerts:
+            self.alerts.extend(contingency_alerts)
+            for ca in contingency_alerts:
+                self.log.warning(f"  [ALERT] {ca['type']}: {ca['reason']}")
+        # MTF多周期分析
+        for pc in list(self.positions.keys()):
+            try:
+                r = analyze_stock(pc, has_position=True)
+                act = r.get("decision", {}).get("action", "wait")
+                desc = r.get("decision", {}).get("desc", "")
+                if act in ("close_long", "reduce"):
+                    self.log.warning(f"  [MTF SELL] {pc}: {desc}")
+                    px = r.get("decision", {}).get("price", 0)
+                    self.alerts.append({"type": "mtf", "code": pc, "desc": desc, "action": act, "price": px})
+            except Exception as e:
+                self.log.debug(f"  [MTF] {pc}: {e}")
+        # [Opt] 自动执行卖出(告警触发) — 带持仓天数保护 + 保本止损失
+        acc = getattr(self, "account", None)
+        if acc:
+            from datetime import datetime as _dt, timedelta
+            min_hold_days = getattr(self, 'cfg', {}).get('risk', {}).get('min_hold_days', 3)
+        for a in self.alerts:
+            a_type = a.get("type", "")
+            code = a.get("code", "")
+            price = a.get("price", 0)
+            shares = a.get("shares", 0)
+            # [Opt] 持仓天数保护: 持仓<3日仅允许硬止损(其他卖出跳过)
+            if acc and code in acc.positions and a_type not in ("stop_loss", "breach_stop"):
+                try:
+                    ed = acc.positions[code].get("entry_date", "")
+                    if ed:
+                        ed_d = _dt.strptime(ed[:10], "%Y-%m-%d").date()
+                        held = (_dt.now().date() - ed_d).days
+                        if held < min_hold_days:
+                            self.log.info(f"  [HoldProtect] {code}: 仅持{held}天<{min_hold_days}, 跳过卖出({a_type})")
+                            continue
+                except:
+                    pass
+        acc = getattr(self, "account", None)
+        for a in self.alerts:
+            a_type = a.get("type", "")
+            code = a.get("code", "")
+            price = a.get("price", 0)
+            shares = a.get("shares", 0)
+            if a_type == "breach_stop" and acc and code in acc.positions:
+                acc.sell(code, price, acc.positions[code]["shares"], f"trailing_stop@{price:.2f}")
+            elif a_type == "stop_loss" and acc and code in acc.positions:
+                acc.sell(code, price, acc.positions[code]["shares"], f"stop_loss@{price:.2f}")
+            elif a_type == "take_profit" and acc and code in acc.positions:
+                acc.sell(code, price, acc.positions[code]["shares"], f"take_profit@{price:.2f}")
+            elif a_type == "scale_out" and shares > 0 and acc and code in acc.positions:
+                acc.sell(code, price, shares, f"scale_out@{price:.2f}")
+            elif a_type == "trailing_stop" and acc and code in acc.positions:
+                acc.sell(code, price, acc.positions[code]["shares"], f"trailing@{price:.2f}")
+            elif a_type == "mtf" and acc and code in acc.positions:
+                action = a.get("action", "close_long")
+                desc = a.get("desc", "")
+                if action == "close_long":
+                    acc.sell(code, price or acc.positions[code].get("current_price", 0),
+                             acc.positions[code]["shares"], f"mtf_close:{desc[:30]}")
+                    self.log.warning(f"  [MTF EXEC] {code} 全仓卖出: {desc}")
+                elif action == "reduce":
+                    total_shares = acc.positions[code]["shares"]
+                    if total_shares <= 200:
+                        # P0: 幽灵持仓修复 — ≤200股直接全卖，避免减半仓永远清不掉
+                        acc.sell(code, price or acc.positions[code].get("current_price", 0),
+                                 total_shares, f"mtf_close_ghost:{desc[:25]}")
+                        self.log.warning(f"  [MTF EXEC] {code} 幽灵持仓全卖{total_shares}股: {desc}")
+                    else:
+                        half = max(100, total_shares // 2)
+                        acc.sell(code, price or acc.positions[code].get("current_price", 0),
+                                 half, f"mtf_reduce:{desc[:30]}")
+                        self.log.warning(f"  [MTF EXEC] {code} 减半仓: {desc}")
+            # ATR移动止盈检查
+            try:
+                from risk.atr_stop import check_moving_tp, calc_atr
+                tn = getattr(self, "_atr_tp", {})
+                for c, pos in (self.positions if hasattr(self, "positions") else {}).items():
+                    if c in tn:
+                        continue
+                    ep = pos.get("avg_cost", 0)
+                    cp = pos.get("current_price", ep)
+                    hp = tn.get(c + "_high", cp)
+                    if cp > hp:
+                        tn[c + "_high"] = cp
+                    k = get_kline(c, 30)
+                    res = check_moving_tp(ep, tn.get(c + "_high", cp), cp, k)
+                    if res == "partial":
+                        sh = pos.get("shares", 0)
+                        half = max(100, sh // 2)
+                        if acc and c in acc.positions and half >= 100:
+                            acc.sell(c, cp, half, "atr_tp_partial")
+                            self.log.info(f"  [ATR-TP] {c}: 减仓{half}股")
+                            tn[c] = True
+                    elif res == "full":
+                        sh = pos.get("shares", 0)
+                        if acc and c in acc.positions and sh >= 100:
+                            acc.sell(c, cp, sh, "atr_tp_full")
+                            self.log.info(f"  [ATR-TP] {c}: 全出{sh}股")
+                            tn[c] = True
+                self._atr_tp = tn
+            except Exception as ez:
+                self.log.debug(f"[ATR] tp: {ez}")
+        if acc:
+            self.positions = dict(acc.positions)
+        # T+0日内做T
+        if acc and self.positions:
+            try:
+                from risk.t0_trading import detect_t0_signal, execute_t0
+                t0_quotes = get_tencent_quotes(list(self.positions.keys()))
+                for code, pos in self.positions.items():
+                    q = t0_quotes.get(code, {})
+                    if not q.get("price", 0):
+                        continue
+                    signal = detect_t0_signal(code, q, pos)
+                    if signal.get("signal"):
+                        self.log.info(f"  [T+0] {code}: {signal['reason']} conf={signal.get('confidence',0)}%")
+                        execute_t0(acc, code, signal)
+                        self.log.info(f"  [T+0] {code}: 执行{signal['action']} {signal.get('shares',0)}股")
+                self.positions = dict(acc.positions)
+            except Exception as e:
+                self.log.debug(f"  [T+0] batch: {e}")
+        # [Push] 交易执行推送(含平仓/减仓)
+        try:
+            from notify.pusher import push_trade_execution
+            push_trade_execution(self)
+        except Exception:
+            pass
+        # ── P1升级: 趋势健康度检查 ──
+        if acc and self.positions:
+            try:
+                from risk.trend_health import calc_trend_health, get_health_action
+                agent_style = getattr(self, 'agent_trading_style', {})
+                health_threshold = agent_style.get("trend_health_threshold", 40)
+                for code, pos in list(self.positions.items()):
+                    k = get_kline(code, 30)
+                    health, dims = calc_trend_health(code, k, self.market_regime)
+                    action_info = get_health_action(health, self.market_regime)
+                    self.log.info(f"  [TrendHealth] {code}: 健康度={health} {action_info['reason']} ma={dims.get('ma','?')} macd={dims.get('macd','?')} vol={dims.get('volume','?')}")
+                    # 低于Agent健康度阈值 → 执行减仓/清仓
+                    if health < health_threshold:
+                        shares = pos.get("shares", 0)
+                        if shares < 100:
+                            continue
+                        act = action_info["action"]
+                        if act in ("close", "reduce_half"):
+                            sell_shares = shares if act == "close" else max(100, shares // 2)
+                            acc.sell(code, pos.get("current_price", pos.get("avg_cost", 0)),
+                                     sell_shares, f"trend_health_{act}:{action_info['reason']}")
+                            self.log.warning(f"  [TrendHealth EXEC] {code}: {act} {sell_shares}股 (health={health})")
+                        elif act == "reduce_third":
+                            sell_shares = max(100, shares // 3)
+                            acc.sell(code, pos.get("current_price", pos.get("avg_cost", 0)),
+                                     sell_shares, f"trend_health_{act}:{action_info['reason']}")
+                            self.log.info(f"  [TrendHealth EXEC] {code}: {act} {sell_shares}股 (health={health})")
+                    # 健康度预警(60-79): 收紧止损
+                    elif 60 <= health < 80:
+                        pass  # 日志已记录, 后续可加止损调整
+                self.positions = dict(acc.positions)
+            except Exception as ez:
+                self.log.debug(f"[TrendHealth] batch: {ez}")
+        self.step_rebalance()
+
+    # ──────── step 10: rebalance ────────
+    def step_rebalance(self):
+        if not self.positions:
+            return
+        sectors_list = get_sector_ranking(50) or []
+        sectors = {s["name"]: {"pct": s.get("change_pct", 0), "rank": i + 1}
+                   for i, s in enumerate(sectors_list)}
+        if not sectors:
+            return
+        quotes = get_tencent_quotes(list(self.positions.keys()))
+        sell_list = []
+        for code, pos in self.positions.items():
+            shares = pos.get("shares", 0)
+            if shares <= 0:
+                continue
+            industry = pos.get("industry", "")
+            cur_price = quotes.get(code, {}).get("price", pos.get("current_price", pos.get("avg_cost", 0)))
+            if industry and industry in sectors:
+                rank = sectors[industry]["rank"]
+                if rank > 20:
+                    sell_list.append({"code": code, "shares": shares, "price": cur_price, "reason": f"板块排{rank}>20清仓"})
+                elif rank > 10:
+                    half = max(100, shares // 2)
+                    sell_list.append({"code": code, "shares": half, "price": cur_price, "reason": f"板块排{rank}>10减半"})
+        regime_cfg = get_regime_config(self.market_regime)
+        max_pos = regime_cfg.get("max_positions", 5)
+        cur_pos = len(self.positions)
+        if cur_pos > max_pos:
+            extra = cur_pos - max_pos
+            ranked = []
+            for code in self.positions:
+                ind = self.positions[code].get("industry", "")
+                r = sectors.get(ind, {}).get("rank", 99)
+                ranked.append((r, code))
+            for _, code in sorted(ranked)[:extra]:
+                pos = self.positions[code]
+                shares = pos.get("shares", 0)
+                cur_price = quotes.get(code, {}).get("price", pos.get("current_price", 0))
+                if shares >= 100:
+                    sell_list.append({"code": code, "shares": shares, "price": cur_price,
+                                      "reason": f"超持仓上限{max_pos}只"})
+        acc = getattr(self, "account", None)
+        if acc is None:
+            acc = SimAccount(self.capital)
+            self.account = acc
+        for s in sell_list:
+            result = acc.sell(s["code"], s["price"], s["shares"], s["reason"])
+            if result and result.get("success"):
+                self.alerts.append({"type": "rebalance", "code": s["code"], "msg": s["reason"]})
+                self.log.info(f"  [Sell] {s['code']} {s['shares']}")
+        # [Push] 再平衡卖出推送
+        if sell_list:
+            try:
+                from notify.pusher import push_trade_execution
+                push_trade_execution(self)
+            except Exception:
+                pass
+        # [Soul] 自适应参数
+        try:
+            if acc and hasattr(acc, "get_trades"):
+                trades = acc.get_trades() if callable(getattr(acc, "get_trades")) else []
+                if trades and len(trades) >= 5:
+                    wins = [t for t in trades[-20:] if t.get("pnl_pct", 0) > 0]
+                    wr = len(wins) / max(len(trades[-20:]), 1)
+                    ap = AdaptiveParams()
+                    ap.update_from_trades(trades[-50:], wr)
+                    self.adaptive_params = ap.params
+                    self.log.info(f"[Soul] style_adaptive: wr={wr:.0%}")
+        except Exception as e:
+            self.log.debug(f"[Soul] style_adaptive: {e}")
+
+    # ──────── step 11: evaluate ────────
+    def step_evaluate(self):
+        bt = get_backtest_engine()
+        self.log.info(f"[Step8]\n{bt.summary()}")
+        health = get_all_health()
+        dead = [n for n, h in health.items() if h.get("status") == "dead"]
+        if dead:
+            self.log.warning(f"[Evolve] Dead strategies: {dead}")
+            from strategies.evolution import mark_strategy_inactive
+            for n in dead:
+                h = health.get(n, {})
+                mark_strategy_inactive(n, reason=f"WR={h.get('win_rate',0):.0%} composite={h.get('composite',0)}")
+        # [Soul] 贝叶斯信念更新
+        try:
+            if hasattr(self, "analysis") and self.analysis:
+                for a in self.analysis:
+                    strat = a.get("best_strategy", "")
+                    if strat and a.get("signal"):
+                        outcome = a.get("best_score", 0) >= 60 or a.get("confidence", 0) >= 0.6
+                        update_belief(strat, outcome)
+        except Exception:
+            pass
+        # [Soul] ML因子IC校准
+        try:
+            from strategies.scoring import calibrate_ml_weights
+            if hasattr(self, "analysis") and self.analysis:
+                history = [{"score": a.get("best_score", 50), "future_return": 0, "factors": {}}
+                           for a in self.analysis if a.get("signal")]
+                if len(history) >= 5:
+                    adj = calibrate_ml_weights(history)
+        except Exception:
+            pass
+        # ── P1升级: 卖飞检测 ──
+        try:
+            acc = getattr(self, "account", None)
+            if acc and hasattr(acc, "get_trades"):
+                trades = acc.get_trades() if callable(getattr(acc, "get_trades")) else []
+                recent_sells = [t for t in trades[-50:] if t.get("action") == "sell"
+                                and t.get("code") and t.get("time", "").startswith(datetime.now().strftime("%Y-%m-%d")[:10])
+                                and (datetime.now() - datetime.strptime(t["time"][:10], "%Y-%m-%d")).days <= 5]
+                # 更准确: 用K线检查卖出后5天走势
+                sold_well = 0
+                sold_wrong = 0
+                for t in recent_sells[-10:]:
+                    code = t.get("code", "")
+                    sell_price = t.get("price", 0)
+                    sell_date = t.get("time", "")[:10]
+                    if not code or not sell_price:
+                        continue
+                    k = get_kline(code, 30)
+                    if k is None or getattr(k, 'empty', True):
+                        continue
+                    closes = k["close"].values
+                    if len(closes) < 5:
+                        continue
+                    # 找卖出日后第5个交易日的收盘价
+                    future_high = max(closes[-5:])
+                    future_5d = closes[-1] if len(closes) >= 1 else 0
+                    if future_5d > sell_price * 1.05:
+                        sold_wrong += 1  # 卖飞: 卖出后涨超5%
+                        self.log.info(f"  [SellOff] 卖飞 {code}: 卖@{sell_price:.2f} 后高点{future_high:.2f}")
+                    elif future_5d < sell_price * 0.97:
+                        sold_well += 1   # 卖对: 卖出后跌超3%
+                        self.log.debug(f"  [SellOff] 卖对 {code}: 卖@{sell_price:.2f} 后{future_5d:.2f}")
+                total_checked = sold_well + sold_wrong
+                if total_checked >= 3:
+                    sell_off_ratio = sold_wrong / total_checked
+                    self.log.warning(f"[SellOff] 最近{total_checked}笔: 卖飞{sold_wrong}/{sold_well}卖对, 卖飞率{sell_off_ratio:.0%}")
+                    if sell_off_ratio > 0.6:
+                        self.log.warning(f"[SellOff] 卖飞率>60%, 建议审视退出条件")
+        except Exception as e:
+            self.log.debug(f"[SellOff] analyze: {e}")
+        # 每周五自进化
+        if datetime.now().weekday() == 4:
+            from weekly_evolution import clear_suspensions, run_weekly_evolution
+            clear_suspensions()
+            report = run_weekly_evolution()
+            self.log.info(f"[Evolution] {report}")
+        # 每月1日自动调参
+        try:
+            from strategies.auto_tune import run_monthly_tune
+            if datetime.now().day == 1:
+                adj = run_monthly_tune(self)
+                if adj:
+                    self.log.info(f"[AutoTune] {len(adj)}因子调整")
+        except Exception:
+            pass
+        # 每月1日生成月报
+        try:
+            if datetime.now().day == 1:
+                from notify.monthly_report import save_monthly_report
+                save_monthly_report()
+                self.log.info("[Monthly] 月报已生成")
+        except Exception:
+            pass
+        # [Soul] 交易反思
+        try:
+            acc = getattr(self, "account", None)
+            if acc and hasattr(acc, "get_trades"):
+                trades = acc.get_trades() if callable(getattr(acc, "get_trades")) else []
+                if trades:
+                    reflector = TradeReflector()
+                    reflections = [reflector.analyze(t) for t in trades[-20:]]
+                    weekly = reflector.weekly_summary(trades[-50:])
+                    self.trade_reflections = reflections
+                    self.log.info(f"[Soul] trade_reflector: {len(reflections)}笔反思完成")
+                    self.log.info(f"[Soul] {weekly}")
+        except Exception as e:
+            self.log.warning(f"[Soul] trade_reflector: {e}")
+
+    # ──────── step 12: review ────────
+    def step_review(self):
+        diag = diagnose()
+        if diag.get("issues"):
+            self.log.warning(f"[Step9] Bias: {'; '.join(diag['issues'])}")
+        self.log.info(f"[Step9] {len(self.plans)} trades, {len(self.alerts)} alerts, bias={diag.get('status','?')}")
+
+    def step_prep(self):
+        self.log.info("[Step9.5] Watchlist generated")
+
+    def _push_summary(self):
+        if not self.plans and not self.alerts and self.market_score < 60:
+            return
+        token = self.cfg.get("notify", {}).get("sct_token", "")
+        if not token:
+            return
+        try:
+            import requests
+            token = _os.environ.get("SCT_TOKEN", token)
+            if not token or len(token) < 10:
+                return
+            health = get_all_health()
+            health_str = "\n".join(f"  {n}: {h['status']} wr={h.get('win_rate','?')}"
+                                   for n, h in list(health.items())[:5] if h.get("trades", 0) > 0)
+            desc = f"Score:{self.market_score:.0f}"
+            if self.plans: desc += f"\nPlans:{len(self.plans)}"
+            if self.alerts: desc += f"\nAlerts:{len(self.alerts)}"
+            desc += f"\n\nStrategies:\n{health_str}"
+            requests.post(f"https://sctapi.ftqq.com/{token}.send",
+                          json={"title": f"Aurora {self.market_regime} {datetime.now():%m-%d %H:%M}",
+                                "desp": desc}, timeout=10)
+        except Exception:
+            pass
+
+    # ── P2升级: 日终批量处理(15:30收盘后) ──
+    def step_close(self):
+        """收盘后批量处理: 更新持仓收盘价 + 生成市场快照 + 预热次日候选"""
+        try:
+            if not is_trading_day():
+                self.log.info("[Close] 非交易日, 跳过")
+                return
+            now_hour = datetime.now().hour
+            if now_hour < 15:
+                self.log.info("[Close] 未收盘, 跳过")
+                return
+            self.log.info("[Close] ===== 日终批量处理开始 =====")
+        except:
+            pass
+        
+        # 1. 更新所有持仓收盘价 + 趋势健康度
+        try:
+            acc = getattr(self, "account", None)
+            if acc and self.positions:
+                quotes = get_tencent_quotes(list(self.positions.keys()))
+                for code, pos in list(self.positions.items()):
+                    q = quotes.get(code, {})
+                    if q.get("price"):
+                        pos["current_price"] = q["price"]
+                    # 收盘后重新计算趋势健康度
+                    k = get_kline(code, 30)
+                    if k is not None and not getattr(k, 'empty', True):
+                        from risk.trend_health import calc_trend_health
+                        health, dims = calc_trend_health(code, k, self.market_regime)
+                        self.log.info(f"  [Close] {code} 收盘健康度={health}")
+                if hasattr(acc, '_save'):
+                    acc._save()
+                self.positions = dict(acc.positions)
+                self.log.info(f"[Close] 已更新{len(self.positions)}只持仓收盘价")
+        except Exception as e:
+            self.log.debug(f"[Close] 更新持仓: {e}")
+        
+        # 2. 生成市场快照(情绪面板)
+        try:
+            snapshot = self._gen_market_snapshot()
+            snapshot_path = Path(__file__).resolve().parent.parent / "data" / "market_snapshot.json"
+            snapshot_path.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False))
+            self.log.info(f"[Close] 市场快照已保存: {snapshot_path.name}")
+        except Exception as e:
+            self.log.debug(f"[Close] 快照: {e}")
+        
+        # 3. 预热次日候选(离线缓存)
+        try:
+            from screening.cascade import cascade_screen
+            old_phase = getattr(self, 'phase', 'monitor')
+            self.phase = 'morning'
+            warmup = cascade_screen(self.cfg, phase='morning')
+            self.phase = old_phase
+            if warmup:
+                self.log.info(f"[Close] 预热次日候选: {len(warmup)}只")
+                # 保存前50只到缓存文件
+                cache_path = Path(__file__).resolve().parent.parent / "data" / "warmup_cache.json"
+                cache_path.write_text(json.dumps([
+                    {"code": c.get("code"), "name": c.get("name", ""), "score": c.get("sector_heat", 0)}
+                    for c in warmup[:50]
+                ], indent=2, ensure_ascii=False))
+            else:
+                self.log.info("[Close] 预热候选为空")
+        except Exception as e:
+            self.log.debug(f"[Close] 预热: {e}")
+        
+        # 4. 保存PnL到预算
+        try:
+            from risk.budget import RiskBudget
+            budget = RiskBudget(self.cfg, self.capital)
+            day_start = getattr(self, "_day_start_value", self.capital)
+            current = getattr(self.account, "total_value", day_start) if hasattr(self, "account") else day_start
+            daily_pnl = (current - day_start) / day_start if day_start > 0 else 0
+            budget.record_pnl(daily_pnl, current)
+            self.log.info(f"[Close] PnL入账: {daily_pnl*100:+.2f}%")
+        except Exception as e:
+            self.log.debug(f"[Close] PnL: {e}")
+        
+        self.log.info("[Close] ===== 日终批量处理完成 =====")
+
+    def _gen_market_snapshot(self) -> dict:
+        """生成市场快照(情绪面板数据)"""
+        snapshot = {
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "time": datetime.now().strftime("%H:%M"),
+            "market_score": getattr(self, "market_score", 50),
+            "regime": getattr(self, "market_regime", "range"),
+            "sentiment": getattr(self, "sentiment_score", 50),
+            "positions": {},
+            "indices": {},
+            "sectors": [],
+        }
+        # 持仓
+        for code, pos in (getattr(self, "positions", {}) or {}).items():
+            snapshot["positions"][code] = {
+                "shares": pos.get("shares", 0),
+                "cost": round(pos.get("avg_cost", 0), 2),
+                "price": round(pos.get("current_price", 0), 2),
+                "pnl_pct": round((pos.get("current_price", 0) / max(pos.get("avg_cost", 1), 0.01) - 1) * 100, 2),
+            }
+        # 主要指数
+        try:
+            idx = get_index_snapshot(["000001", "399001", "399006", "000300", "000688"])
+            if idx:
+                for k, v in idx.items():
+                    snapshot["indices"][{"000001": "上证", "399001": "深证", "399006": "创业板", "000300": "沪深300", "000688": "科创50"}.get(k, k)] = {
+                        "price": v.get("price", 0), "chg_pct": v.get("change_pct", 0)
+                    }
+        except: pass
+        # 板块TOP5
+        try:
+            sectors = get_sector_ranking(5) or []
+            snapshot["sectors"] = [{"name": s.get("name"), "chg_pct": s.get("change_pct", 0)} for s in sectors]
+        except: pass
+        return snapshot
 
     def run(self):
         if not is_trading_day():
-            self.log.info("非交易日,跳过"); return
+            self.log.info("非交易日,跳过")
+            return
         if not is_market_open():
-            self.log.info("非交易时段,跳过盘前分析")
+            self.log.info("非交易时段,跳过")
             return
         t0 = time.time()
         acct = getattr(self, "account", None)
         self._day_start_value = acct.total_value if acct is not None else self.capital
         steps = [
-            ("step_market", "市场体检(6维度)"),
-            ("step_cascade", "三级联动(大盘→板块→个股)"),
-            ("step_screen", "CAN SLIM选股"),
-            ("step_analyze", "7战法(多信号确认+量价验证)"),
-            ("step_score", "综合评分(动态Kelly+regime)"),
-            ("step_position", "仓位计划(真实Kelly+自适应)"),
-            ("step_risk", "风控(VaR+压力测试)"),
-            ("step_simulate", "模拟交易(含移动止盈)"),
-            ("step_monitor", "实时监控"),
-            ("step_rebalance", "动态调仓(板块+Regime)"),
-            ("step_evaluate", "策略评估(自进化统计)"),
-            ("step_review", "复盘(行为偏误)"),
-            ("step_prep", "次日准备"),
+            # 新顺序: 个股→板块→大盘
+            ("step_cascade", "选股"), ("step_screen", "CAN SLIM"),
+            ("step_analyze", "信号分析"), ("step_market", "市场体检"),
+            ("step_score", "综合评分"), ("step_position", "仓位计划"),
+            ("step_risk", "风控"), ("step_simulate", "模拟交易"),
+            ("step_monitor", "实时监控"), ("step_rebalance", "动态调仓"),
+            ("step_evaluate", "评估进化"), ("step_review", "复盘"),
         ]
         for step_name, label in steps:
             self.pipeline_validator.validate_before(step_name)
@@ -59,421 +1397,17 @@ class AuroraEngine:
             except Exception as e:
                 self.log.error(f"  {label} FAIL: {e}")
             self.pipeline_validator.validate_after(step_name)
-        self.log.info(f"Done — {time.time()-t0:.1f}s")
+        self.log.info(f"Done in {time.time()-t0:.1f}s")
         report = self.pipeline_validator.report()
         if report["summary"]["total_errors"] > 0 or report["summary"]["total_warnings"] > 0:
             self.log.warning(self.pipeline_validator.summary_str())
         self._push_summary()
 
-    def step_market(self):
-        from data.sources import get_index_snapshot, get_market_breadth, get_sector_ranking
-        idx = get_index_snapshot(["000001","399001","399006"])
-        idx_score = 30 + sum(1 for v in (idx or {}).values() if v.get("change_pct", 0) > 0) * 20 if idx else 50
-        breadth = get_market_breadth()
-        ad_score = breadth.get("ad_score", 0) if breadth else 0
-        sectors = get_sector_ranking(100) or []
-        sec_up = sum(1 for s in sectors if s.get("change_pct", 0) > 0)
-        sec_score = int(min(sec_up / max(len(sectors), 1) * 100, 100))
-        total = idx_score * 0.40 + ad_score * 0.10 + sec_score * 0.10 + 50 * 0.20
-        # 补充指标: 涨跌比(ad_score已覆盖) + 涨停数
-        from data.sources import get_limit_up_count
-        try:
-            limit_up_cnt = get_limit_up_count() or 0
-            limit_up_score = min(limit_up_cnt / 50 * 20, 20)  # 50只涨停=满分20
-        except Exception:
-            limit_up_score = 10
-        total += limit_up_score
-        # 波动率补充: 用ATR指数反映市场恐慌程度
-        from risk.garch_var import get_market_volatility_score
-        try:
-            vol_score = get_market_volatility_score()
-            total = total * (1.0 + (vol_score - 50) / 200)
-        except Exception:
-            pass
-        self.market_score = min(100, max(0, total))
-        # 优化阈值: 结合经典道氏理论+彼得斯分形
-        if self.market_score >= 70: self.market_regime = "bull_strong"
-        elif self.market_score >= 55: self.market_regime = "bull_weak"
-        elif self.market_score >= 40: self.market_regime = "range"
-        elif self.market_score >= 20: self.market_regime = "bear_weak"
-        else: self.market_regime = "bear_strong"
-        from strategies.reflexivity import analyze_reflexivity
-        ref = analyze_reflexivity(self.market_score, self.market_regime)
-        self.reflexivity = ref
-        self.log.info(f"[Step0] {self.market_regime} ({self.market_score:.0f}/100) | {ref.get('stage','')[:40]}")
-        try:
-            from data.sources import get_tencent_quotes
-            q = get_tencent_quotes(["000001"])
-        except Exception:
-            pass
-        self.northbound = {"signal": "neutral", "cumulative_yi": 0}
 
-    def step_cascade(self):
-        if self.market_score < 40:
-            self.candidates = []
-            self.log.warning(f"[Cascade] 市场偏弱({self.market_score:.0f}<40), 暂停选股")
-            return
-        from screening.cascade import cascade_screen
-        self.candidates = cascade_screen(self.cfg)
-        from data.sources import get_sector_ranking
-        sectors = {s["name"]: s["change_pct"] for s in (get_sector_ranking(50) or [])}
-        for c in self.candidates:
-            c["sector_heat"] = sectors.get(c.get("industry", ""), 0)
-        self.candidates.sort(key=lambda x: x.get("sector_heat", 0), reverse=True)
-        self.log.info(f"[Cascade] {len(self.candidates)} candidates")
-        # 强势股筛选: 板块轮动+资金流向+RS排名+涨停基因
-        if self.candidates:
-            from screening.strong_stock import screen_strong_stocks
-            from data.sources import get_top_sectors, get_top_flow_stocks
-            top_sectors = get_top_sectors(5)
-            flow_stocks = get_top_flow_stocks(200)
-            self.candidates = screen_strong_stocks(self.candidates, 
-                getattr(self, "northbound", None),
-                top_sectors=top_sectors, flow_stocks=flow_stocks)
-            self.log.info(f"[Strong] 强势股: {len(self.candidates)}只 (板块+RS+资金+基因)")
-        # 集合竞价筛选
-        from screening.auction import auction_screen
-        if self.candidates:
-            self.candidates = auction_screen(self.candidates, top_n=10)
-            self.log.info(f"[Auction] CC筛选后: {len(self.candidates)}只")
-
-    def step_screen(self):
-        if not self.candidates: return
-        from screening.canslim import can_slim_filter
-        self.screened = can_slim_filter(self.candidates, self.market_regime)
-        self.log.info(f"[Step1] CAN SLIM: {len(self.screened)} passed")
-
-    def step_analyze(self):
-        candidates = getattr(self, "screened", None) or self.candidates or []
-        if not candidates: self.analysis = []; return
-        from strategies.runner import analyze_all
-        from strategies.regime import filter_strategies_by_regime
-        from strategies.confirmation import confirm_entry
-        self.analysis = analyze_all(candidates, market_regime=self.market_regime)
-        # 多周期区间套评分增强: 为每个候选股添加MTF维度
-        try:
-            from strategies.mtf_intraday import analyze_stock
-            for a in self.analysis:
-                code = a.get("code", "")
-                if code:
-                    mtf = analyze_stock(code, has_position=False)
-                    a["mtf_decision"] = mtf.get("decision", {})
-                    a["mtf_daily"] = mtf.get("daily", {})
-                    a["mtf_score"] = {"daily": mtf.get("daily",{}).get("score",50),
-                                       "m30": mtf.get("m30",{}).get("score",50),
-                                       "m5": mtf.get("m5",{}).get("score",0)}
-        except Exception as e:
-            self.log.debug(f"[MTF] batch analysis fail: {e}")
-        # 多信号确认过滤
-        confirmed = []
-        for a in self.analysis:
-            if not a.get("signal"): continue
-            kline_data = {"df": a.get("kline_df")} if a.get("kline_df") is not None else None
-            passed, conf, checks = confirm_entry(a, kline_data)
-            a["confirmed"] = passed
-            a["confidence"] = round(conf, 2)
-            a["checks"] = checks
-            if passed: confirmed.append(a)
-            else:
-                from strategies.evolution import record_signal
-                record_signal(a.get("best_strategy","?"), a.get("best_score",0))
-        # 按市场状态过滤策略
-        active_strats = filter_strategies_by_regime(self.market_regime,
-            [a.get("best_strategy","") for a in confirmed])
-        self.analysis = [a for a in confirmed if a.get("best_strategy","") in active_strats]
-        self.log.info(f"[Step2] {len(confirmed)} signals→{len(self.analysis)} confirmed (regime:{self.market_regime})")
-
-    def step_score(self):
-        if not getattr(self, "analysis", None): self.scores = []; return
-        from strategies.scoring import composite_score
-        self.scores = composite_score(self.analysis, self.market_regime, self.market_score)
-        self.log.info(f"[Step3] {len(self.scores)} scored")
-
-    def step_position(self):
-        if not getattr(self, "scores", None): self.plans = []; return
-        from risk.position import plan_positions
-        from backtest.engine import get_backtest_engine
-        bt = get_backtest_engine()
-        # Phase 1a: Seed Kelly with walk-forward backtest results
-        codes = [s.get("code","") for s in (self.scores or [])[:5] if s.get("code")]
-        if codes:
-            wf = bt.walk_forward(codes, train_days=150, test_days=40, windows=2)
-            for code, params in wf.items():
-                self.log.info(f"[WF] {code}: kelly={params.get('kelly',0.08):.2f} wr={params.get('win_rate',0):.0%}")
-        self.plans = plan_positions(self.scores, self.capital, self.cfg, bt)
-        # v9: filter paused stocks
-        if self.paused_stocks:
-            before = len(self.plans)
-            self.plans = [p for p in self.plans if p.get("code") not in self.paused_stocks]
-            if before - len(self.plans):
-                self.log.warning(f"[Fuse] filtered {before-len(self.plans)} paused stocks: {self.paused_stocks}")
-        # v9: market interval throttle
-        today = datetime.now().strftime("%Y-%m-%d")
-        min_interval = 5 if self.market_score >= 50 else 10
-        if self.last_trade_date:
-            from datetime import timedelta
-            last = datetime.strptime(self.last_trade_date, "%Y-%m-%d")
-            if (datetime.now() - last).days < min_interval:
-                self.log.info(f"[Fuse] throttle: {(datetime.now()-last).days}d<{min_interval}d, skip")
-                self.plans = []
-                return
-        if self.plans:
-            self.last_trade_date = today
-        self.log.info(f"[Step4] {len(self.plans)} plans (Kelly adapted)")
-        # 原则3: 加仓只做盈利股 — 亏损仓位不追加
-        from risk.position_scaling import check_add_position
-        for code, pos in self.account.positions.items() if hasattr(self, 'account') and self.account else []:
-            if hasattr(self, 'account') and self.account:
-                cur = pos.get("current_price", pos.get("avg_cost", 0))
-                add = check_add_position(pos, cur)
-                if add["should_add"]:
-                    # 找到该股的plan并增加仓位
-                    for p in self.plans:
-                        if p.get("code") == code:
-                            p["shares"] += add.get("shares", 0)
-                            p["weight"] = round((p["shares"] * p["entry_price"]) / self.capital, 3)
-                            self.log.info(f"  [Add] {code}: {add['reason']}")
-                elif add.get("reason","").startswith("盈利不足"):
-                    pass  # 正常: 不摊平亏损
-
-    def step_risk(self):
-        if not self.plans: return
-        from risk.controls import check_all, check_liquidity
-        self.plans, self.alerts = check_all(self.plans, self.cfg)
-        current = getattr(self.account, "total_value", self._day_start_value)
-        daily_loss = (current - self._day_start_value) / self._day_start_value if self._day_start_value > 0 else 0
-        if daily_loss < -0.03:
-            self.log.warning(f"[Fuse] daily loss {daily_loss*100:.1f}% > 3%, halt")
-            self.plans = []
-            self.alerts.append({"type":"fuse_daily","reason":f"loss{daily_loss*100:.0f}%"})
-        before = len(self.plans)
-        self.plans = [p for p in self.plans if check_liquidity(p.get("code",""), p.get("entry_price",0))]
-        if before > len(self.plans):
-            self.log.info(f"[Liq] filtered {before-len(self.plans)} low-liquidity")
-        self.log.info(f"[Step5] {len(self.plans)} passed, {len(self.alerts)} alerts after risk")
-
-    def step_simulate(self):
-        if not self.plans: return
-        from executor.sim_account import SimAccount
-        acc = SimAccount(self.capital, self.cfg)
-        for p in self.plans:
-            acc.buy(p["code"], p["entry_price"], p["shares"], p.get("strategy", ""))
-        self.account = acc
-        self.positions = acc.positions  # 同步持仓到引擎监控管线
-        # 记录交易到自进化引擎
-        from backtest.engine import get_backtest_engine
-        from strategies.evolution import record_trade_result
-        for p in self.plans:
-            record_trade_result(p.get("strategy","?"), 0, True)  # 开仓记录
-            bt = get_backtest_engine()
-            bt.update_stats(p.get("strategy","?"), 0, True)  # Feed live trade to Kelly
-        from strategies.behavior import record_entry
-        for p in self.plans:
-            record_entry(p)
-        from risk.profit_withdraw import check_withdraw
-        if acc.total_value > 0:
-            wd = check_withdraw(acc.total_value, self.capital)
-            if wd["should_withdraw"]:
-                self.log.warning(f"[Withdraw] {wd["reason"]}")
-        # 仓位缩放检查: 金字塔加仓+分批止盈
-        from risk.position_scaling import check_add_position, check_scale_out
-        for code, pos in acc.positions.items():
-            cur = pos.get("current_price", pos.get("avg_cost", 0))
-            add = check_add_position(pos, cur)
-            if add["should_add"]:
-                self.log.info(f"  [Scale] {code}: {add['reason']}")
-            scale = check_scale_out(pos, cur)
-            if scale["should_scale"]:
-                self.log.info(f"  [Scale] {code}: {scale['reason']}")
-        self.log.info(f"[Step6] {len(self.plans)} opened")
-
-    def step_monitor(self):
-        from monitor.watcher import watch_positions
-        alerts = watch_positions(self.positions, self.cfg)
-        self.alerts.extend(alerts)
-        # 盘中突发检查
-        from monitor.contingency import check_contingency
-        # 盘中大盘实时涨跌
-        from data.sources import get_index_snapshot
-        idx_data = get_index_snapshot(["000001"])
-        idx_chg = idx_data.get("000001", {}).get("change_pct", 0) if idx_data else 0
-        market_status = {"index_change": idx_chg}
-        kline_cache = {}
-        for code in self.positions:
-            from data.sources import get_kline
-            df = get_kline(code, 30)
-            if not df.empty: kline_cache[code] = df
-        contingency_alerts = check_contingency(self.positions, market_status, kline_cache)
-        if contingency_alerts:
-            self.alerts.extend(contingency_alerts)
-            for ca in contingency_alerts:
-                self.log.warning(f"  [ALERT] {ca['type']}: {ca['code']} {ca['reason']}")
-        # Phase C: 多周期盘中分析 (日线+30分+5分)
-        from strategies.mtf_intraday import analyze_stock
-        for pc in list(self.positions.keys()):
-            try:
-                r = analyze_stock(pc, has_position=True)
-                act = r["decision"].get("action","wait")
-                desc = r["decision"].get("desc","")
-                if act in ("close_long","reduce"):
-                    self.log.warning(f"  [MTF SELL] {pc}: {desc}")
-                    self.alerts.append({"type":"mtf","code":pc,"desc":desc})
-                elif act == "hold":
-                    self.log.debug(f"  [MTF HOLD] {pc}: {desc}")
-            except Exception as e:
-                self.log.debug(f"  [MTF] {pc} fail: {e}")
-        
-        # Phase 1b: Act on watcher alerts (trailing stop, scale-out)
-        for a in alerts:
-            if a.get("type") == "breach_stop":
-                self.log.warning(f"  [SELL] {a['code']}: 触发移动止盈@{a.get('price',0):.2f}, 盈利{a.get('profit_pct',0):+.1f}%")
-            elif a.get("type") == "scale_out":
-                self.log.info(f"  [SELL] {a['code']}: 分批止盈, 减{a.get('shares',0)}股@{a.get('price',0):.2f}")
-            elif a.get("type") == "trailing_stop":
-                self.log.info(f"  [STOP] {a['code']}: 移动止盈提升至{a.get('stop',0):.2f} (盈利{a.get('profit_pct',0):+.1f}%)")
-            elif a.get("type") == "stop_loss":
-                self.log.warning(f"  [STOP] {a['code']}: 触发止损@{a.get('price',0):.2f}")
-            elif a.get("type") == "take_profit":
-                self.log.info(f"  [SELL] {a['code']}: 触发止盈@{a.get('price',0):.2f}")
-        # Phase B: 板块排名调仓 + Regime仓位管理
-        self.step_rebalance()
-
-    def step_rebalance(self):
-        """动态调仓: 板块排名+市场状态→调整现有持仓"""
-        if not self.positions:
-            return
-        from data.sources import get_sector_ranking
-        from strategies.regime import get_regime_config
-        sectors_list = get_sector_ranking(50) or []
-        sectors = {s["name"]: {"pct": s.get("change_pct",0), "rank": i+1}
-                   for i, s in enumerate(sectors_list)}
-        if not sectors:
-            self.log.info("[Rebalance] 无板块数据,跳过")
-            return
-        
-        # A: 板块排名检查 — 弱板块卖出
-        from data.sources import get_tencent_quotes
-        codes = list(self.positions.keys())
-        quotes = get_tencent_quotes(codes)
-        sell_list = []
-        
-        for code, pos in self.positions.items():
-            shares = pos.get("shares", 0)
-            if shares <= 0: continue
-            industry = pos.get("industry", "")
-            cur_price = quotes.get(code, {}).get("price", pos.get("current_price", pos.get("avg_cost", 0)))
-            
-            if industry and industry in sectors:
-                info = sectors[industry]
-                rank = info["rank"]
-                if rank > 20:
-                    sell_list.append({"code": code, "shares": shares, "price": cur_price,
-                                      "reason": f"板块[{industry}]排名{rank}>20,清仓"})
-                    self.log.warning(f"  [Rebalance SELL] {code}: {sell_list[-1]['reason']}")
-                elif rank > 10:
-                    half = max(100, shares // 2)
-                    sell_list.append({"code": code, "shares": half, "price": cur_price,
-                                      "reason": f"板块[{industry}]排名{rank}>10,减半"})
-                    self.log.info(f"  [Rebalance REDUCE] {code}: {sell_list[-1]['reason']}")
-        
-        # B: Regime仓位上限管理
-        regime_cfg = get_regime_config(self.market_regime)
-        max_pos = regime_cfg.get("max_positions", 5)
-        cur_pos = len(self.positions)
-        
-        if cur_pos > max_pos:
-            extra = cur_pos - max_pos
-            # 按板块排名排序, 卖出最差的
-            ranked_codes = []
-            for code in self.positions:
-                ind = self.positions[code].get("industry", "")
-                r = sectors.get(ind, {}).get("rank", 99)
-                ranked_codes.append((r, code))
-            ranked_codes.sort(key=lambda x: -x[0])  # 最差的排前面
-            
-            for _, code in ranked_codes[:extra]:
-                pos = self.positions[code]
-                shares = pos.get("shares", 0)
-                cur_price = quotes.get(code, {}).get("price", pos.get("current_price", 0))
-                if shares >= 100:
-                    sell_list.append({"code": code, "shares": shares, "price": cur_price,
-                                      "reason": f"regime={self.market_regime}上限{max_pos}仓,超{extra}仓"})
-                    self.log.warning(f"  [Rebalance SELL] {code}: {sell_list[-1]['reason']}")
-        
-        # C: 执行卖出 (使用已有模拟账户)
-        acc = getattr(self, 'account', None)
-        if acc is None:
-            from executor.sim_account import SimAccount
-            acc = SimAccount(self.capital)
-            self.account = acc
-        for s in sell_list:
-            result = acc.sell(s["code"], s["price"], s["shares"], s["reason"])
-            if result and result.get("success"):
-                self.alerts.append({"type": "rebalance", "code": s["code"],
-                                    "msg": s["reason"], "shares": s["shares"]})
-                self.log.info(f"  [Sell] {s['code']} {s['shares']}sh @{s['price']:.2f} {s['reason']}")
-            else:
-                self.log.warning(f"  [Sell FAIL] {s['code']}: 卖出失败")
-
-    def step_evaluate(self):
-        from backtest.engine import get_backtest_engine
-        bt = get_backtest_engine()
-        self.log.info(f"[Step8]\n{bt.summary()}")
-        from strategies.evolution import get_all_health
-        health = get_all_health()
-        dead = [n for n, h in health.items() if h.get("status") == "dead"]
-        if dead:
-            self.log.warning(f"[Evolve] Dead strategies: {dead}")
-            from strategies.evolution import mark_strategy_inactive
-            for n in dead:
-                h = health.get(n, {})
-                wr = h.get("win_rate", 0) or 0
-                cs = h.get("composite", 0) or 0
-                mark_strategy_inactive(n, reason="WR={:.0%} composite={}".format(wr, cs))
-        # Phase 3: Weekly self-evolution (Friday only)
-        from datetime import datetime
-        if datetime.now().weekday() == 4:  # Friday
-            from weekly_evolution import clear_suspensions, run_weekly_evolution
-            clear_suspensions()
-            report = run_weekly_evolution()
-            self.log.info(f"[Evolution] {report}")
-
-    def step_review(self):
-        from strategies.behavior import diagnose
-        diag = diagnose()
-        if diag.get("issues"):
-            self.log.warning(f"[Step9] Bias: {"; ".join(diag["issues"])}")
-        self.log.info(f"[Step9] {len(self.plans)} trades, {len(self.alerts)} alerts, bias={diag.get("status","?")}")
-
-    def step_prep(self):
-        self.log.info("[Step9.5] Watchlist generated")
-
-    def _push_summary(self):
-        # Only push when there is real content (trades or alerts)
-        if not self.plans and not self.alerts and self.market_score < 60:
-            return
-        token = self.cfg.get("notify", {}).get("sct_token", "")
-        if not token: return
-        try:
-            import requests
-            token = _os.environ.get("SCT_TOKEN", token)
-            if not token or len(token) < 10: return
-            from strategies.evolution import get_all_health
-            health = get_all_health()
-            health_str = "\n".join(f"  {n}: {h["status"]} wr={h.get("win_rate","?")}" for n,h in list(health.items())[:5] if h.get("trades",0) > 0)
-            if not health_str:
-                health_str = "  (no trade data)"
-            desc = f"Score:{self.market_score:.0f}"
-            if self.plans: desc += f"\nPlans:{len(self.plans)}"
-            if self.alerts: desc += f"\nAlerts:{len(self.alerts)}"
-            desc += f"\n\nStrategies:\n{health_str}"
-            requests.post(f"https://sctapi.ftqq.com/{token}.send",
-                json={"title": f"Aurora {self.market_regime} {datetime.now():%m-%d %H:%M}",
-                      "desp": desc}, timeout=10)
-        except Exception: pass
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     AuroraEngine().run()
+
 
 if __name__ == "__main__":
     main()

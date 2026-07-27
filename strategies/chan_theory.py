@@ -53,11 +53,11 @@ def _detect_bi(df, _depth=0):
         t, b = tops[ti], bottoms[bi]
         if abs(t["idx"] - b["idx"]) >= 2:
             if t["idx"] > b["idx"]:
-                bis.append({"type": "up_bi", "start": b["price"], "end": t["price"],
+                bis.append({"type": "up_bi", "start": b.get("price", 0), "end": t.get("price", 0),
                            "start_idx": b["idx"], "end_idx": t["idx"]})
                 ti += 1
             else:
-                bis.append({"type": "down_bi", "start": t["price"], "end": b["price"],
+                bis.append({"type": "down_bi", "start": t.get("price", 0), "end": b.get("price", 0),
                            "start_idx": t["idx"], "end_idx": b["idx"]})
                 bi += 1
         else:
@@ -168,7 +168,7 @@ def _detect_divergence(df, hubs):
                 })
 
     # METHOD 3: Volume-price divergence
-    volume = df["volume"].values
+    volume = df["volume"].values if "volume" in df.columns else np.zeros(len(df))
     if len(volume) > 20:
         lookback = min(20, len(volume))
         vol_window = volume[-lookback:]
@@ -256,14 +256,14 @@ def _classify_bs_points(_tops, _bottoms, _close, df):
                     # 1st buy出现后, 价格回抽不破前低 = 2nd buy
                     if len(close_arr) > 5:
                         pullback_low = min(close_arr[-5:])
-                        buy1_low = last["price"]
+                        buy1_low = last.get("price", 0)
                         if pullback_low > buy1_low * 0.98:
                             points.append({"type": "buy2", "position": f"第二类买点(回抽不破{buy1_low:.2f})",
                                            "price": round(float(close_arr[-1]), 2), "score": 75})
                 elif "sell1" in last["type"]:
                     if len(close_arr) > 5:
                         bounce_high = max(close_arr[-5:])
-                        sell1_high = last["price"]
+                        sell1_high = last.get("price", 0)
                         if bounce_high < sell1_high * 1.02:
                             points.append({"type": "sell2", "position": f"第二类卖点(反弹不破{sell1_high:.2f})",
                                            "price": round(float(close_arr[-1]), 2), "score": 75})
@@ -337,7 +337,7 @@ def interval_nesting(kline_df):
         precision = "none"; score = 0; detail = "无背驰触发"
     l3_last = l3_result.get("last_bs") if l3_result.get("signal") else None
     l1_last = l1_result.get("last_bs") if l1_result.get("signal") else None
-    entry_point = l3_last["price"] if l3_last else (l1_last["price"] if l1_last else None)
+    entry_point = l3_last.get("price", 0) if l3_last else (l1_last.get("price", 0) if l1_last else None)
     return {
         "precision": precision, "score": score, "detail": detail,
         "direction": l1_direction,

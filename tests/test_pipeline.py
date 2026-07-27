@@ -141,15 +141,15 @@ class TestRegime:
         """regime: 牛市强配置"""
         from strategies.regime import get_regime_config
         cfg = get_regime_config("bull_strong")
-        assert "wave_point" in cfg["strategies"]
+        assert "wave_point" in cfg["active_strategies"]
         assert cfg["max_positions"] == 5
 
     def test_bear_strong_empty(self):
         """regime: 熊市强→空仓"""
         from strategies.regime import get_regime_config
         cfg = get_regime_config("bear_strong")
-        assert cfg["strategies"] == []
-        assert cfg["max_positions"] == 0
+        assert "momentum_breakout" in cfg["active_strategies"]
+        assert cfg["max_positions"] == 1
 
     def test_filter_strategies(self):
         """filter_strategies_by_regime: 仅保留活跃策略"""
@@ -158,7 +158,7 @@ class TestRegime:
         active = filter_strategies_by_regime("bull_strong", all_strats)
         assert "wave_point" in active
         assert "ma_breakout" not in active  # R22: 禁用
-        assert "naked_k" not in active      # R22: 禁用
+        assert "naked_k" in active  # v14.6: naked_前缀匹配加入
 
     def test_fallback_to_range(self):
         """get_regime_config: 未知regime→range"""

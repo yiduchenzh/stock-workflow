@@ -69,13 +69,51 @@ def analyze_all(candidates: list, kline_override: dict = None, market_regime: st
         mo = check_momentum_breakout(kline, market_regime)
         if mo["signal"]: signals.append(("momentum_breakout", mo["score"], price))
 
-        # 裸K形态
-        from strategies.naked_k import detect_pin_bar, naked_k_score
-        pb_det = detect_pin_bar(kline)
-        tl = pb_det.get("score", 0) if pb_det else 0
-        if tl > 0: signals.append(("test_line", tl, price))
+        # 裸K四大形态信号 v2.0 (完整形态库)
+        from strategies.naked_k import (
+            detect_pin_bar, detect_inside_bar, detect_engulfing,
+            detect_fakey, detect_supply_demand_zones, naked_k_score
+        )
+        pb = detect_pin_bar(kline)
+        if pb and pb.get("score", 0) > 0:
+            signals.append(("naked_pinbar", pb["score"], price))
+        ib = detect_inside_bar(kline)
+        if ib and ib.get("score", 0) > 0:
+            signals.append(("naked_insidebar", ib["score"], price))
+        eg = detect_engulfing(kline)
+        if eg and eg.get("score", 0) > 0:
+            signals.append(("naked_engulf", eg["score"], price))
+        fy = detect_fakey(kline)
+        if fy and fy.get("score", 0) > 0:
+            signals.append(("naked_fakey", fy["score"], price))
+        sd = detect_supply_demand_zones(kline)
+        sd_score = max((z.get("score", 0) for z in sd), default=0) if sd else 0
+        if sd_score > 0:
+            signals.append(("naked_supply_demand", sd_score, price))
+        # 裸K综合评分兜底(无具体形态时)
         nk = naked_k_score(kline)
-        if nk >= 50: signals.append(("naked_k", int(nk), price))
+        if nk >= 50 and not any(s[0].startswith("naked_") for s in signals):
+            signals.append(("naked_k", int(nk), price))
+
+        # 缠论三类买卖点信号 v3.0
+        from strategies.chan_theory import detect_fractals
+        chan = detect_fractals(kline)
+        if chan.get("signal"):
+            bs = chan.get("last_bs", {})
+            if bs:
+                bs_type = bs.get("type", "")
+                bs_score = bs.get("score", 70)
+                signals.append(("chan_" + bs_type, bs_score, price))
+            else:
+                signals.append(("chan_theory", 65, price))
+        # 缠论区间套精确度补充
+        from strategies.chan_theory import interval_nesting
+        try:
+            nesting = interval_nesting(kline)
+            if nesting.get("precision") == "high" and not any(s[0].startswith("chan_") for s in signals):
+                signals.append(("chan_theory", 70, price))
+        except Exception:
+            pass
 
         # 123法则
         s123 = _check_123_rule(kline)
@@ -95,14 +133,22 @@ def analyze_all(candidates: list, kline_override: dict = None, market_regime: st
                 signals = [(s[0], min(100, s[1] + int(bonus * 0.3)), s[2]) for s in signals]
                 signals.append(("sector_rotation", min(100, bonus), price))
 
-        # 多战法投票
+        # 拉里·威廉姆斯短线信号
+        try:
+            from strategies.larry_williams import williams_composite_score
+            wm = williams_composite_score(kline, code)
+            for ws in wm.get("signals", []):
+                if ws[0] not in [s[0] for s in signals]:
+                    signals.append(ws)
+        except Exception:
+            pass
+
+        # 多战法投票 (双重确认: 需要≥2个信号)
         if len(signals) >= 2:
             weighted_score = sum(s[1] for s in signals) / len(signals) + 10
             best_strat = max(signals, key=lambda x: x[1])[0]
-        elif signals:
-            best_strat = signals[0][0]
-            weighted_score = signals[0][1]
         else:
+            # 单信号或0信号 → 不确认
             best_strat = None; weighted_score = 0
 
         results.append({

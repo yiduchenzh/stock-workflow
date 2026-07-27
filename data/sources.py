@@ -1,33 +1,54 @@
-
-"""数据源 — 歪枣网(主力) + 腾讯/东财(备用), 三级降级"""
+"""
+数据源 — 腾讯(主力) + TDX TCP(K线) , 双源架构
+WZ歪枣网和东方财富已弃用(2026-07-27)
+"""
 import os as _os
-_data_sources_tried_wz = False
 
 def _try_wz_first(fn_name, *args, **kwargs):
-    """尝试歪枣网优先, 失败则返回None"""
-    global _data_sources_tried_wz
-    try:
-        if not _data_sources_tried_wz:
-            import data.wz_sources as _wz
-            _data_sources_tried_wz = True
-        import data.wz_sources as _wz
-        fn = getattr(_wz, fn_name, None)
-        if fn:
-            result = fn(*args, **kwargs)
-            if result is not None and (hasattr(result, "__len__") and len(result) > 0) or (not hasattr(result, "__len__")):
-                return result
-    except Exception as e:
-        pass
+    """WZ歪枣网已弃用, 直接返回None"""
     return None
 
 import urllib.request, json, time, logging
 from pathlib import Path
 import pandas as pd
+from data.data_quality import DataQualityCheck
+import msvcrt as _ms, os as _fos
+def _lock_file(name: str, timeout: float = 5.0) -> bool:
+    """文件级互斥锁(Windows), 防并发写入"""
+    lock_path = Path(__file__).resolve().parent.parent / "data" / f"{name}.lock"
+    end = __import__("time").time() + timeout
+    while __import__("time").time() < end:
+        try:
+            fd = _fos.open(str(lock_path), _fos.O_CREAT | _fos.O_WRONLY | _fos.O_EXCL)
+            _ms.locking(fd, _ms.LK_NBLCK, 1)
+            _fos.close(fd)
+            return True
+        except (OSError, IOError, BlockingIOError):
+            __import__("time").sleep(0.1)
+    return False
+
+def _unlock_file(name: str):
+    lock_path = Path(__file__).resolve().parent.parent / "data" / f"{name}.lock"
+    # 优先TDX TCP直连(零外部依赖)
+    try:
+        from data.tdx_sources import get_tdx_quotes
+        tdx_q = get_tdx_quotes(codes)
+        if tdx_q and len(tdx_q) > 0:
+            return tdx_q
+    except Exception:
+        pass
+    try:
+        p = Path(lock_path)
+        if p.exists(): p.unlink()
+    except: pass
+
 
 logger = logging.getLogger("aurora.data")
 UA = "Mozilla/5.0"
 
 def _prefix(code):
+    if code.startswith(("8","4")):
+        return f"bj{code}"  # 北交所
     return f"sh{code}" if code.startswith(("6","9")) else f"sz{code}"
 
 def get_tencent_quotes(codes: list) -> dict:
@@ -38,15 +59,34 @@ def get_tencent_quotes(codes: list) -> dict:
     # Fallback to original tencent logic below
     """腾讯批量行情 — 不封IP, 主力数据源"""
     if not codes: return {}
-    prefixed = [_prefix(c) for c in codes[:80]]
-    url = "https://qt.gtimg.cn/q=" + ",".join(prefixed)
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    try:
-        data = urllib.request.urlopen(req, timeout=10).read().decode("gbk", errors="replace")
-    except Exception as e:
-        logger.warning(f"腾讯行情失败: {e}")
-        return {}
     result = {}
+    BATCH_SIZE = 300
+    for i in range(0, len(codes), BATCH_SIZE):
+        batch = codes[i:i+BATCH_SIZE]
+        prefixed = [_prefix(c) for c in batch]
+        url = "https://qt.gtimg.cn/q=" + ",".join(prefixed)
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            data = urllib.request.urlopen(req, timeout=15).read().decode("gbk", errors="replace")
+            for line in data.strip().split(";"):
+                if "=" not in line or '"' not in line: continue
+                key = line.split("=")[0].split("_")[-1]; vals = line.split('"')[1].split("~")
+                if len(vals) < 53: continue
+                code = key[2:]
+                result[code] = {
+                    "code": code, "name": vals[1],
+                    "price": float(vals[3]) if vals[3] else 0,
+                    "change_pct": float(vals[32]) if vals[32] else 0,
+                    "pe": float(vals[39]) if vals[39] else 0,
+                    "mcap": float(vals[44]) if vals[44] else 0,
+                    "turnover": float(vals[38]) if vals[38] else 0,
+                    "vol_ratio": float(vals[49]) if vals[49] else 0,
+                    "pb": float(vals[46]) if vals[46] else 0,
+                }
+        except Exception as e:
+            logger.warning(f"腾讯行情批次{i//BATCH_SIZE+1}失败: {e}")
+            continue
+    logger.info(f"[Tencent] {len(result)}/{len(codes)} quotes")
     for line in data.strip().split(";"):
         if "=" not in line or '"' not in line: continue
         key = line.split("=")[0].split("_")[-1]; vals = line.split('"')[1].split("~")
@@ -116,64 +156,93 @@ def get_real_stock_list() -> list:
         if STOCK_CACHE.exists():
             data = _j.loads(STOCK_CACHE.read_text())
             if __import__("time").time() - data.get("time", 0) < STOCK_CACHE_TTL:
-                logger.info(f"[Cache] {len(data.get('codes',[]))} stocks ({(STOCK_CACHE_TTL - (__import__("time").time() - data['time'])):.0f}s TTL)")
+                elapsed = __import__("time").time() - data["time"]
+                remaining = max(0, STOCK_CACHE_TTL - elapsed)
+                logger.info(f"[Cache] {len(data.get('codes',[]))} stocks ({remaining:.0f}s TTL)")
                 return data["codes"]
     except Exception:
         pass
     
     codes = []
-    for fs in ['m:0+t:6,m:0+t:80', 'm:1+t:2,m:1+t:23']:
-        for pn in range(1, 6):
+    # 东方财富API已不可用, 跳过直接走降级
+    # 详见: config.yaml sources: [tencent, tdx]
+    logger.info('[EM] API不可用, 跳过降级链路')
+    # 尝试TDX TCP
+    try:
+        from data.tdx_sources import get_tdx_stock_list
+        codes = get_tdx_stock_list()
+        if codes and len(codes) >= 4000:
+            logger.info(f'[TDX] {len(codes)} stocks')
             try:
-                url = 'https://push2.eastmoney.com/api/qt/clist/get'
-                r = req.get(url, params={'pn': pn, 'pz': 100, 'po': 1, 'np': 1, 'fltt': 2, 'invt': 2, 'fs': fs, 'fields': 'f12'},
-                           headers={'User-Agent': UA, 'Referer': 'https://quote.eastmoney.com/'}, timeout=10)
-                items = r.json().get('data', {}).get('diff', []) or []
-                chunk = [it['f12'] for it in items if len(str(it.get('f12',''))) == 6]
-                codes.extend(chunk)
-                if len(items) < 100: break
-            except Exception as e:
-                logger.warning(f'EM p{pn} fail({e}), retry once')
-                __import__("time").sleep(2.0)
-                try:
-                    r2 = req.get(url, params={'pn': pn, 'pz': 100, 'po': 1, 'np': 1, 'fltt': 2, 'invt': 2, 'fs': fs, 'fields': 'f12'},
-                               headers={'User-Agent': UA, 'Referer': 'https://quote.eastmoney.com/'}, timeout=10)
-                    items2 = r2.json().get('data', {}).get('diff', []) or []
-                    chunk = [it['f12'] for it in items2 if len(str(it.get('f12',''))) == 6]
-                    if chunk:
-                        codes.extend(chunk)
-                        if len(items2) < 100: break
-                        continue
-                except Exception:
-                    pass
-                logger.warning(f'EM p{pn} retry also failed')
-                break
-    if codes:
-        result = list(dict.fromkeys(codes))
-        logger.info(f'[EM] {len(result)} stocks')
-        # Save to cache
-        try:
-            STOCK_CACHE.write_text(_j.dumps({"time": __import__("time").time(), "codes": result}))
-        except Exception:
-            pass
-        return result
-    logger.warning('EM fail, try Sina')
+                STOCK_CACHE.write_text(_j.dumps({"time": __import__("time").time(), "codes": codes}))
+            except Exception:
+                pass
+            return codes
+    except Exception as e:
+        logger.warning(f'TDX stock list fail: {e}')
+    # 最后: Sina
     codes = _sina_stock_list()
     if codes:
         try:
             STOCK_CACHE.write_text(_j.dumps({"time": __import__("time").time(), "codes": codes}))
         except Exception:
             pass
+    # 最后最后: 巨潮szse_stock.json(6198只全市场)
+    if len(codes) < 4000:
+        try:
+            import requests as _req
+            r = _req.get("http://www.cninfo.com.cn/new/data/szse_stock.json",
+                         headers={"User-Agent": UA}, timeout=15)
+            stock_data = r.json().get("stockList", [])
+            codes2 = list(dict.fromkeys([s["code"] for s in stock_data if len(str(s.get("code",""))) == 6]))
+            if codes2 and len(codes2) > len(codes):
+                logger.info(f'[CNINFO] {len(codes2)} stocks (替代Sina的{len(codes)})')
+                codes = codes2
+                try:
+                    STOCK_CACHE.write_text(_j.dumps({"time": __import__("time").time(), "codes": codes}))
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f'CNINFO stock list fail: {e}')
     return codes
 
 
 def get_kline_period(code: str, period: str = "day", days: int = 250) -> pd.DataFrame:
-    """多周期K线: day/week/month — 真实数据来自腾讯"""
+    """多周期K线: day/week/month + 5min/30min/60min — 腾讯数据源"""
     import requests as req
     pfx = _prefix(code)
+    
+    # 分钟K线: 使用腾讯mkline接口(无web.前缀)
+    minute_map = {"5min": "m5", "15min": "m15", "30min": "m30", "60min": "m60"}
+    if period in minute_map:
+        mp = minute_map[period]
+        url = f"https://ifzq.gtimg.cn/appstock/app/kline/mkline?param={pfx},{mp},,{days}"
+        try:
+            r = req.get(url, headers={"User-Agent": UA, "Referer": "https://finance.qq.com"}, timeout=10)
+            data = r.json().get("data", {}).get(pfx, {}).get(mp, [])
+            if not data: data = r.json().get("data", {}).get(pfx, {}).get("qt", {}).get(pfx, [])
+            # mkline返回格式: [时间, 开盘, 收盘, 最高, 最低, 成交量]
+            # 但字段位置可能偏移,尝试多格式
+            rows = []
+            for d in data:
+                if isinstance(d, list) and len(d) >= 6:
+                    try:
+                        rows.append({"date": str(d[0]), "open": float(d[1]), "close": float(d[2]),
+                                    "high": float(d[3]), "low": float(d[4]), "volume": float(d[5])})
+                    except (ValueError, IndexError):
+                        continue
+            if rows:
+                df = __import__("pandas").DataFrame(rows)
+                df["date"] = __import__("pandas").to_datetime(df["date"])
+                return df
+        except Exception as e:
+            logger.warning(f"分钟K线获取失败 {code} {period}: {e}")
+        return __import__("pandas").DataFrame()
+    
+    # 日/周/月K线: 原腾讯fqkline接口
     period_map = {"day": "day", "week": "week", "month": "month"}
     p = period_map.get(period, "day")
-    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={pfx},{p},,,{days},qfq"
+    url = f"https://ifzq.gtimg.cn/appstock/app/fqkline/get?param={pfx},{p},,,{days},qfq"
     try:
         r = req.get(url, headers={"User-Agent": UA}, timeout=10)
         data = r.json().get("data", {}).get(pfx, {})
@@ -225,7 +294,10 @@ def get_market_breadth() -> dict:
     if wz_mb and wz_mb.get("up_count",0) + wz_mb.get("down_count",0) > 0:
         return wz_mb
     try:
-        quotes = get_tencent_quotes(get_real_stock_list()[:100])
+        codes = get_real_stock_list()
+        # 分层采样: 取前200+中间400+后400,覆盖大/中/小市值
+        sample = codes[:200] + codes[len(codes)//2-200:len(codes)//2+200] + codes[-400:] if len(codes) > 1000 else codes[:1000]
+        quotes = get_tencent_quotes(sample)
         if not quotes: return {"ad_score": 0, "up_count": 0, "down_count": 0}
         changes = [q.get("change_pct", 0) for q in quotes.values()]
         up = sum(1 for c in changes if c > 0)
@@ -240,7 +312,7 @@ def _original_get_kline(code: str, days: int = 250) -> pd.DataFrame:
     """获取历史K线(腾讯日K)"""
     import requests
     pfx = _prefix(code)
-    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={pfx},day,,,{days},qfq"
+    url = f"https://ifzq.gtimg.cn/appstock/app/fqkline/get?param={pfx},day,,,{days},qfq"
     try:
         r = requests.get(url, headers={"User-Agent": UA}, timeout=10)
         data = r.json().get("data", {}).get(pfx, {}).get("qfqday", []) or r.json().get("data", {}).get(pfx, {}).get("day", [])
@@ -317,6 +389,16 @@ def get_sector_ranking(top_n: int = 50) -> list:
         if cached:
             logger.info(f"[Sector] Using cached ({len(cached)} sectors)")
             return cached
+        # 后备: 同花顺热点归纳板块
+        try:
+            from data.fallback_sources import get_hot_sectors
+            hot = get_hot_sectors()
+            if hot:
+                fallback = [{"name": h["tag"], "code": "", "change_pct": 0, "up": 0, "down": 0, "leader": ""} for h in hot[:15]]
+                logger.info(f"[Sector] Fallback hot sectors: {len(fallback)}")
+                return fallback
+        except Exception:
+            pass
         return []
 def get_top_flow_stocks(top_n=200):
     """获取资金流向排名（东财主力）, 含缓存降级 + Sina量比近似降级"""
@@ -498,5 +580,80 @@ def get_kline_with_validation(code: str, days: int = 120) -> pd.DataFrame:
 
 # 兼容层: 保持get_kline名称不变, 所有外部导入不受影响
 def get_kline(code: str, days: int = 500) -> pd.DataFrame:
+    # SharedDataCache缓存60s
+    try:
+        from data.shared_cache import cache as _ck
+        _k = f"kline_{code}_{days}"
+        _c = _ck.get(_k)
+        if _c is not None: return _c
+    except: pass
+    # 优先歪枣网数据源(付费,可靠)
+    # 优先TDX TCP直连(零外部依赖, 不走HTTP限流)
+    try:
+        from data.tdx_sources import get_tdx_kline
+        tdx_df = get_tdx_kline(code, days)
+        if tdx_df is not None and not tdx_df.empty:
+            try: from data.shared_cache import cache as _ck; _ck.set(_k, tdx_df, 60)
+            except: pass
+            return tdx_df
+    except Exception:
+        pass
+    try:
+        wz_df = _try_wz_first("get_klines", code, days)
+        if wz_df is not None and not wz_df.empty:
+            DataQualityCheck.check_and_warn(wz_df, source="wz", code=code)
+            try: from data.shared_cache import cache as _ck; _ck.set(_k, wz_df, 60)
+            except: pass
+            return wz_df
+    except:
+        pass
     """获取K线(带数据质量检查)"""
-    return get_kline_with_validation(code, days)
+    df = get_kline_with_validation(code, days)
+    if df is not None and not df.empty:
+        DataQualityCheck.check_and_warn(df, source="tencent", code=code)
+    try: from data.shared_cache import cache as _ck; _ck.set(_k, df, 60)
+    except: pass
+    return df
+
+
+# ═══ TDX数据源 (easy-tdx, 2026.7) ═══
+_TDX_CLIENT = None
+
+def _get_tdx_client():
+    global _TDX_CLIENT
+    if _TDX_CLIENT is not None: return _TDX_CLIENT
+    try:
+        from easy_tdx import TdxClient, ping_all
+        hosts = ping_all(timeout=3)
+        if not hosts: return None
+        _TDX_CLIENT = TdxClient(host=hosts[0][0])
+        _TDX_CLIENT.connect()
+        logger.info(f"[TDX] {hosts[0][0]} ({hosts[0][1]*1000:.0f}ms)")
+        return _TDX_CLIENT
+    except Exception as e:
+        logger.debug(f"[TDX] init: {e}")
+        return None
+
+def get_tdx_kline(code, days=120):
+    try:
+        from easy_tdx import Market
+        c = _get_tdx_client()
+        if c is None: return None
+        m = Market.SZ if code[0] in "03" else Market.SH
+        df = c.get_security_bars(m, code, 9, 0, min(days, 800))
+        return df
+    except Exception as e:
+        logger.debug(f"[TDX] kline/{code}: {e}")
+    return None
+
+def get_tdx_quotes(codes):
+    try:
+        from easy_tdx import Market
+        c = _get_tdx_client()
+        if c is None: return {}
+        stocks = [(Market.SZ, s) if s[0] in "03" else (Market.SH, s) for s in codes]
+        df = c.get_security_quotes(stocks)
+        if df is not None:
+            return {r["code"]: {"price":float(r["price"]), "change_pct":float(r.get("change_pct",0))} for _, r in df.iterrows()}
+    except: pass
+    return {}

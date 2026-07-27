@@ -55,23 +55,29 @@ def screen_strong_stocks(candidates: list, northbound=None, kline_cache=None, to
         elif 2 <= turnover <= 10 and vr >= 1.5: score += 12
         elif 1 <= turnover and vr >= 1.0: score += 6
         
-        # 北向资金偏好 (15分)
+        # 北向资金评分 (25分): 整体流入方向+重仓个股
         nb_score = 0
         if northbound and northbound.get("direction") in ("inflow", "strong_inflow"):
-            # 北向流入时大盘股更受益
+            nb_score += 15  # 北向整体流入加分
+            # 北向重仓近似: 换手率>3%+市值>500亿 ≈ 北向重仓TOP100个股
             mcap = c.get("mcap", 50)
-            if mcap > 200: nb_score = 12
-            elif mcap > 100: nb_score = 8
+            if turnover > 3 and mcap > 500:
+                nb_score += 10  # 北向重仓额外加分
         score += nb_score
         
-        # 涨停基因 (10分): 近期是否有涨停记录
+        # 涨停基因+龙虎榜评分 (18分): 涨停记录+近期大涨
         if kline_cache:
             kline = kline_cache.get(c.get("code"))
             if kline is not None and len(kline) >= 20:
                 close_vals = kline["close"].values; chg_history = np.diff(close_vals[-61:]) / close_vals[-61:-1] * 100
+                # 涨停基因 (10分): 近期涨停记录
                 limit_ups = sum(1 for ch in chg_history if ch >= 9.5)
                 if limit_ups >= 3: score += 10
                 elif limit_ups >= 1: score += 6
+                # 龙虎榜评分 (8分): 最近一日涨停或涨幅>5%
+                latest_chg = chg_history[-1] if len(chg_history) >= 1 else 0
+                if latest_chg >= 9.5 or latest_chg > 5:
+                    score += 8
         
         # 价格位置 (10分): 在MA20之上更健康
         if kline_cache:
@@ -84,12 +90,12 @@ def screen_strong_stocks(candidates: list, northbound=None, kline_cache=None, to
                 else: score -= 5
         
         c["strong_score"] = min(score, 100)
-        c["strong_grade"] = "A" if score >= 80 else ("B" if score >= 65 else ("C" if score >= 50 else "D"))
+        c["strong_grade"] = "A" if score >= 85 else ("B" if score >= 70 else ("C" if score >= 55 else "D"))
         scored.append(c)
     
     scored.sort(key=lambda x: x["strong_score"], reverse=True)
-    logger.info(f"[Strong] {len(scored)} scored, grades: A={sum(1 for s in scored if s['strong_grade']=='A')} B={sum(1 for s in scored if s['strong_grade']=='B')}")
-    # 仅返回A/B级强势股 (strong_score>=65), 宁缺毋滥
-    quality = [s for s in scored if s["strong_score"] >= 65]
-    logger.info(f"[Strong] Quality filter: {len(quality)}/{len(scored)} passed (>=65)")
+    logger.info(f"[Strong] {len(scored)} scored, grades: A={sum(1 for s in scored if s['strong_grade']=='A')} B={sum(1 for s in scored if s['strong_grade']=='B')} C={sum(1 for s in scored if s['strong_grade']=='C')} D={sum(1 for s in scored if s['strong_grade']=='D')}")
+    # 仅返回A/B级强势股 (strong_score>=70), 宁缺毋滥
+    quality = [s for s in scored if s["strong_score"] >= 70]
+    logger.info(f"[Strong] Quality filter: {len(quality)}/{len(scored)} passed (>=70)")
     return quality[:15]
