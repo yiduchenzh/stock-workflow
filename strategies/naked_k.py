@@ -169,27 +169,31 @@ def detect_fakey(kline_df, idx=-1):
 
 # ═══ 供需区检测 ═══
 def detect_supply_demand_zones(kline_df):
-    """RBR/DBD/DBR/RBD 供需区"""
+    """RBR/DBD/DBR/RBD 供需区 — 加入量能确认(P0修复)"""
     if kline_df is None or len(kline_df) < 20: return []
-    close, volume = kline_df["close"].values, kline_df["volume"].values if "volume" in kline_df.columns else np.ones(len(kline_df))
+    close = kline_df["close"].values
+    volume = kline_df["volume"].values if "volume" in kline_df.columns else np.ones(len(kline_df))
+    avg_vol = np.mean(volume[-20:]) if len(volume) >= 20 else np.mean(volume)
+    if avg_vol <= 0: avg_vol = 1
     zones = []
     i = 3
     while i < len(close) - 3:
-        # RBR (Rally-Base-Rally) = 需求区
-        if close[i] > close[i-3] and abs(close[i] - close[i-1]) / close[i] < 0.01 and close[i+3] > close[i]:
+        # RBR (Rally-Base-Rally) = 需求区 — 需放量确认
+        vol_ok = volume[i] > avg_vol * 0.8 and volume[i+3] > avg_vol * 0.8
+        if close[i] > close[i-3] and abs(close[i] - close[i-1]) / max(close[i], 0.01) < 0.01 and close[i+3] > close[i] and vol_ok:
             zone_low = min(kline_df["low"].values[i-1:i+2])
             zone_high = max(kline_df["high"].values[i-1:i+2])
+            score = 65
+            if volume[i] > avg_vol * 1.5: score += 5  # 放量加分
             zones.append({"type": "demand", "zone": (round(zone_low, 2), round(zone_high, 2)),
-                         "freshness": "high" if i > len(close) - 10 else "medium",
-                         "score": 65})
+                         "freshness": "high" if i > len(close) - 10 else "medium", "score": score})
             i += 4
         # DBD (Drop-Base-Drop) = 供给区
-        elif close[i] < close[i-3] and abs(close[i] - close[i-1]) / close[i] < 0.01 and close[i+3] < close[i]:
+        elif close[i] < close[i-3] and abs(close[i] - close[i-1]) / max(close[i], 0.01) < 0.01 and close[i+3] < close[i] and vol_ok:
             zone_low = min(kline_df["low"].values[i-1:i+2])
             zone_high = max(kline_df["high"].values[i-1:i+2])
             zones.append({"type": "supply", "zone": (round(zone_low, 2), round(zone_high, 2)),
-                         "freshness": "high" if i > len(close) - 10 else "medium",
-                         "score": 60})
+                         "freshness": "high" if i > len(close) - 10 else "medium", "score": 60})
             i += 4
         else:
             i += 1

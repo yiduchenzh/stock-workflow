@@ -1,4 +1,4 @@
-"""多数据源交叉验证 — 腾讯 vs 歪枣网 同一策略对比"""
+"""多数据源交叉验证 — 腾讯 vs TDX TCP 同一策略对比"""
 import sys, os, json, time
 from datetime import datetime
 from pathlib import Path
@@ -8,10 +8,6 @@ from data.sources import get_kline as tencent_kline
 from strategies.runner import _check_wave_point
 from strategies.momentum_breakout import check_momentum_breakout
 from strategies.mean_reversion import check_mean_reversion
-try:
-    import data.wz_sources as wz
-    HAS_WZ = bool(os.environ.get("WZ_TOKEN", ""))
-except: HAS_WZ = False
 S = "2024-01-01"
 E = datetime.now().strftime("%Y-%m-%d")
 CAP = 1000000; MP = 100; MXP = 5; STOP = 0.07; RR = 2.8
@@ -117,16 +113,9 @@ if __name__=="__main__":
     print("="*60);print("  多数据源交叉验证");print("="*60)
     xt=XVal("tencent",tencent_kline);xt.load(CD)
     xw=None
-    if HAS_WZ:
-        xw=XVal("waizao",lambda c,d: wz.get_klines(c,max(500,d)));xw.load(CD)
+    xw = None
     for name,fn in STRATS:
         print(f"\n--- {name} ---")
         rt=xt.run(name,fn)
         print(f"  Tencent: {rt['trades']:>3}tr WR={rt['wr']:>5.1f}% PF={rt['pf']:>5.2f} P&L={rt['pnl']:>+8.0f} Ret={rt['ret']:>+6.2f}%")
-        if HAS_WZ and xw and xw.kc:
-            rw=xw.run(name,fn)
-            pd_=abs(rt["pf"]-rw["pf"])
-            flag=" DATA-SENSITIVE" if pd_>0.2 else ""
-            print(f"  Waizao:  {rw['trades']:>3}tr WR={rw['wr']:>5.1f}% PF={rw['pf']:>5.2f} P&L={rw['pnl']:>+8.0f} Ret={rw['ret']:>+6.2f}%")
-            print(f"  Diff:    PF {pd_:.2f}{flag}")
     print(f"\nTime: {time.time()-t0:.1f}s")

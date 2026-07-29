@@ -22,7 +22,7 @@ def _get_tencent_quote(code: str) -> dict:
     返回: {code, name, price, change_pct, pe, pb, mcap, turnover, vol_ratio}
     """
     try:
-        pfx = f"sh{code}" if code.startswith(("6", "9")) else f"sz{code}"
+        pfx = f"sh{code}" if code and code.startswith(("6", "9")) else f"sz{code}"
         url = f"https://qt.gtimg.cn/q={pfx}"
         req = urllib.request.Request(url, headers={"User-Agent": UA})
         resp = urllib.request.urlopen(req, timeout=8)
@@ -58,7 +58,7 @@ def _get_tencent_kline(code: str, days: int = 30) -> list:
     返回: [{date, open, close, high, low, volume}, ...]
     """
     try:
-        pfx = f"sh{code}" if code.startswith(("6", "9")) else f"sz{code}"
+        pfx = f"sh{code}" if code and code.startswith(("6", "9")) else f"sz{code}"
         url = f"https://ifzq.gtimg.cn/appstock/app/fqkline/get?param={pfx},day,,,{days},qfq"
         req = urllib.request.Request(url, headers={"User-Agent": UA})
         resp = urllib.request.urlopen(req, timeout=8)

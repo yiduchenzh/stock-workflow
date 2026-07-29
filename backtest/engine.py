@@ -130,17 +130,29 @@ class BacktestEngine:
         best_strat = max(strategy_counts, key=strategy_counts.get)
         win_rate = strategy_counts[best_strat] / max(total, 1)
 
-        # 模拟PnL: 用signal强度+score模拟盈亏分布
+        # 真实PnL: 用K线收盘价计算买入持有收益率
         strat_results = [r for r in analysis_results if r.get("best_strategy") == best_strat]
         pnls = []
         for r in strat_results:
-            score = r.get("best_score", 50)
             sig = bool(r.get("signal", False))
             if sig:
-                # 高分高概率盈利，低分高概率亏损
-                pnl = (score - 50) / 100 * 0.03 * (1 if np.random.random() < 0.55 else -1)
+                kline_df = r.get("kline_df")
+                if kline_df is not None and hasattr(kline_df, 'close') and hasattr(kline_df, 'open'):
+                    try:
+                        close_vals = kline_df["close"].values
+                        # 用测试窗口内的价格变化计算真实收益率
+                        entry = float(close_vals[0])
+                        exit_p = float(close_vals[-1])
+                        if entry > 0:
+                            pnl = (exit_p - entry) / entry
+                        else:
+                            pnl = -0.02
+                    except (IndexError, ValueError, TypeError):
+                        pnl = -0.02
+                else:
+                    pnl = -0.02
             else:
-                pnl = -0.02 + np.random.random() * 0.01
+                pnl = -0.02
             pnls.append(pnl)
 
         if pnls:

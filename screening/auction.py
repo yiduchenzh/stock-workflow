@@ -11,6 +11,7 @@ def get_auction_data(codes: list) -> dict:
     # 腾讯竞价接口: qt.gtimg.cn 的竞价字段
     prefixed = []
     for c in codes[:50]:
+        if not c or not isinstance(c, str): continue
         pfx = "sh" if c.startswith(("6","9")) else "sz"
         prefixed.append(f"{pfx}{c}")
     url = f"https://qt.gtimg.cn/q={','.join(prefixed)}"

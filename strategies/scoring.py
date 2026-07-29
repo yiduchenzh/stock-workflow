@@ -61,12 +61,12 @@ def composite_score(analysis, market_regime, market_score, mtf_scheme="A"):
             chan_val = 40
         chan_score_val = chan_val * 0.10
         liq_score = _calc_liquidity_score(a)
-        market_adapt = 5 if market_regime.startswith("bull") else (3 if market_regime == "range" else 1)
+        market_adapt = 5 if market_regime and market_regime.startswith("bull") else (3 if market_regime == "range" else 1)
         cs = a.get("can_slim", 50) * 0.05
         from strategies.kline_patterns import detect_eight_patterns
         eight_p = detect_eight_patterns(kline_df) if kline_df is not None else []
         pattern_bonus = sum(p.get("score", 0) * 0.05 for p in eight_p[:2])
-        total = (strategy_score + mtf_score + ind_score + vol_score + nk_score + chan_score_val + liq_score + market_adapt + cs + pattern_bonus)
+        total = (strategy_score + mtf_score + ind_score + vol_score + nk_score*0.5 + chan_score_val*0.5 + liq_score + market_adapt + cs + pattern_bonus)
         from risk.garch_var import get_kelly_adjustment
         garch_adj = get_kelly_adjustment(kline_df) if kline_df is not None else 1.0
         total *= garch_adj

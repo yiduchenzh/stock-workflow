@@ -74,7 +74,7 @@ def select_trading_style(market_regime: str, market_score: float,
     daily_vol = personality.get("daily_vol", 2.0)
     
     # Rule 2: High vol + bull market + strong trend → trend following
-    if market_regime.startswith("bull") and sector_heat > 1.0:
+    if market_regime and market_regime.startswith("bull") and sector_heat > 1.0:
         return {**TRADING_STYLES["trend_follow"], 
                 "reason": f"牛市+热板块→趋势跟踪",
                 "stop_atr_mult": 2.5, "position_weight": 0.18}

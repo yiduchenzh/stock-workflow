@@ -54,8 +54,8 @@ def analyze_all(candidates: list, kline_override: dict = None, market_regime: st
         # 五大战法
         fb = _check_first_board(kline)
         if fb > 0: signals.append(("first_board", fb, price))
-        pb = _check_pullback(kline)
-        if pb > 0: signals.append(("pullback", pb, price))
+        # pb = _check_pullback(kline)
+        # if pb > 0: signals.append(("pullback", pb, price))  # 注释: 与mean_reversion重叠
         wp = _check_wave_point(kline)
         if wp > 0: signals.append(("wave_point", wp, price))
 
@@ -83,17 +83,17 @@ def analyze_all(candidates: list, kline_override: dict = None, market_regime: st
         eg = detect_engulfing(kline)
         if eg and eg.get("score", 0) > 0:
             signals.append(("naked_engulf", eg["score"], price))
-        fy = detect_fakey(kline)
-        if fy and fy.get("score", 0) > 0:
-            signals.append(("naked_fakey", fy["score"], price))
+        # fy = detect_fakey(kline)
+        # if fy and fy.get("score", 0) > 0:
+        #     signals.append(("naked_fakey", fy["score"], price))  # 注释: <2%触发率, 低效
         sd = detect_supply_demand_zones(kline)
         sd_score = max((z.get("score", 0) for z in sd), default=0) if sd else 0
         if sd_score > 0:
             signals.append(("naked_supply_demand", sd_score, price))
-        # 裸K综合评分兜底(无具体形态时)
-        nk = naked_k_score(kline)
-        if nk >= 50 and not any(s[0].startswith("naked_") for s in signals):
-            signals.append(("naked_k", int(nk), price))
+        # # 裸K综合评分兜底(无具体形态时) — 注释: 低效(<1%触发)
+        # nk = naked_k_score(kline)
+        # if nk >= 50 and not any(s[0].startswith("naked_") for s in signals):
+        #     signals.append(("naked_k", int(nk), price))
 
         # 缠论三类买卖点信号 v3.0
         from strategies.chan_theory import detect_fractals
@@ -104,20 +104,20 @@ def analyze_all(candidates: list, kline_override: dict = None, market_regime: st
                 bs_type = bs.get("type", "")
                 bs_score = bs.get("score", 70)
                 signals.append(("chan_" + bs_type, bs_score, price))
-            else:
-                signals.append(("chan_theory", 65, price))
-        # 缠论区间套精确度补充
-        from strategies.chan_theory import interval_nesting
-        try:
-            nesting = interval_nesting(kline)
-            if nesting.get("precision") == "high" and not any(s[0].startswith("chan_") for s in signals):
-                signals.append(("chan_theory", 70, price))
-        except Exception:
-            pass
+            # else:  # 注释: 泛化chan_theory信号<1%触发
+            #     signals.append(("chan_theory", 65, price))
+        # # 缠论区间套精确度补充 — 注释: <1%触发
+        # from strategies.chan_theory import interval_nesting
+        # try:
+        #     nesting = interval_nesting(kline)
+        #     if nesting.get("precision") == "high" and not any(s[0].startswith("chan_") for s in signals):
+        #         signals.append(("chan_theory", 70, price))
+        # except Exception:
+        #     pass
 
-        # 123法则
-        s123 = _check_123_rule(kline)
-        if s123 > 0: signals.append(("123_rule", s123, price))
+        # # 123法则 — 注释: <3%触发率, 低效
+        # s123 = _check_123_rule(kline)
+        # if s123 > 0: signals.append(("123_rule", s123, price))
 
         # MA突破
         ma = _check_ma_breakout(kline)

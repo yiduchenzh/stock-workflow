@@ -1,63 +1,69 @@
 __pycache__/
 *.pyc
 .venv/
-data/risk_state.json
-data/sim_state.json
-data/sim_trades.json
-data/aurora.log
-config.yaml
-.vscode/
-*.egg-info/
-
-data/sector_cache.json
-_fix_*.py
-fix_*.py
-fix_test.py
-_verify.py
-test_*.txt
-test_write*.py
-monitor_output.txt
-review_output.txt
-test_detail.txt
+.venv32/
+node_modules/
 uv.lock
 
-_clean_engine.py
+# 数据缓存
+data/*.json
+data/*.log
+data/candidate_tracker.py
+data/data_quality.py
+data/shared_cache.py
+data/reports/
+data/ht_trade_log.json
+data/reconciliation_log.json
+data/fast_monitor.log
+data/agent_aggregate.json
+data/agent_comparison.json
+data/pnl_tracker.json
+data/beliefs.json
+data/market_memory.json
+data/live_state.json
+data/risk_budget.json
+data/withdraw_state.json
+data/rolling_stats.json
+data/behavior_journal.json
+data/recovery_state.json
+data/stress_test_report.json
+data/converge_stocks.json
+data/bull_stocks.json
+data/flow_cache.json
+data/strategy_*.md
+data/audit_*.md
+data/rollback.json
+data/agent_*/
+
+# 用户数据
+data/user_*/
+multi_user/
+
+# 配置文件
+config.yaml
+
+# 日志
+logs/
+*.log
+
+# 前端构建
+frontend/node_modules/
+frontend/dist/
+
+# 临时/调试文件
 _debug*
-_patch_engine.py
-_write_watcher.py
-core/engine_raw.txt
-data/stock_cache.json
-
-*.txt
-_ins*
-_insert*
-_write*
-r18_*.py
-r19_*.py
-run_audit.py
-test_div*.py
-write_*.py
-data/backtest*.json
-.env
-bt_*.py
-data/bt_*.json
-_data_*/
-data/wf_cache.json
-.pytest_cache/
-_backtest_runner.py
-data/test_mtf.py
-
-# Helper scripts
-_s*.bat
-_h*.py
 _fix_*.py
-_opt_*.py
-_profile*.py
-_gen_*.py
-_write_*.py
-_test_*.py
-_test_data.py
+_verify*.py
+fix_*.py
+test_*.txt
+monitor_output.txt
+review_output.txt
 
-# Test data cache
-data/test_cache/
-data/strategy_evolution.json
+# 工作流
+workflows/
+*.bat
+auto_start.bat
+start_daemon.bat
+stop_daemon.bat
+run_*.bat
+tail_scan.bat

@@ -64,6 +64,8 @@ def filter_strategies_by_regime(regime, strategies):
     active = get_regime_config(regime)["active_strategies"]
     result = []
     for s in strategies:
+        if not s:
+            continue
         for a in active:
             if a.endswith("_"):  # 前缀匹配: chan_ / naked_
                 if s.startswith(a):

@@ -39,7 +39,7 @@ def can_slim_filter(candidates: list, market_regime: str) -> list:
         if 100 <= mcap <= 800: score += 10; details["i"] = 10
         elif 50 <= mcap <= 100: score += 5; details["i"] = 5
         # M: 市场方向
-        if market_regime.startswith("bull"): score += 15; details["m"] = 15
+        if market_regime and market_regime.startswith("bull"): score += 15; details["m"] = 15
         elif market_regime == "range": score += 8; details["m"] = 8
         else: details["m"] = 0
         c["can_slim"] = score

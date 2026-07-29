@@ -6,7 +6,7 @@ logger = logging.getLogger("aurora.mtf_intraday")
 
 def get_mtf_kline(code: str) -> dict:
     """获取3个时间框架的K线数据"""
-    pfx = f"sz{code}" if code.startswith(("0","3")) else f"sh{code}"
+    pfx = f"sz{code}" if code and code.startswith(("0","3")) else f"sh{code}"
     result = {"daily": None, "m30": None, "m5": None}
     urls = {
         "daily": f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={pfx},day,,,120,qfq",
