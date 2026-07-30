@@ -58,12 +58,3 @@ fix_*.py
 test_*.txt
 monitor_output.txt
 review_output.txt
-
-# 工作流
-workflows/
-*.bat
-auto_start.bat
-start_daemon.bat
-stop_daemon.bat
-run_*.bat
-tail_scan.bat
