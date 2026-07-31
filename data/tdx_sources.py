@@ -39,9 +39,69 @@ def _get_client():
 
 # ── K线数据 ──
 
+# 常见指数代码(走index_bars接口)
+_INDEX_CODES = {"000001", "000300", "000905", "000852", "399001", "399006",
+                "399300", "399005", "399905", "899050"}
+
+
+def _normalize_tdx_df(df: "pd.DataFrame") -> "pd.DataFrame":
+    """标准化mootdx返回的DataFrame:
+    1. 去重列(0.11.7返回重复的volume列)
+    2. 合成标准date列(优先datetime, 其次year/month/day)
+    3. 统一列名 {date, open, close, high, low, volume, amount}
+    """
+    import pandas as pd
+
+    # 1. 去重列 — 保留第一个
+    df = df.loc[:, ~df.columns.duplicated()]
+
+    # 2. 合成date列
+    if "date" in df.columns:
+        # 防御: 乱码日期(如 "1133-78-45 15:00")直接丢弃该行
+        date_raw = df["date"].astype(str)
+        mask = date_raw.str.match(r"^\d{4}-\d{2}-\d{2}")
+        df = df[mask]
+        if df.empty:
+            return pd.DataFrame()
+        df["date"] = date_raw[mask].str[:10]
+    elif "datetime" in df.columns:
+        dt_raw = df["datetime"].astype(str)
+        mask = dt_raw.str.match(r"^\d{4}-\d{2}-\d{2}")
+        df = df[mask]
+        if df.empty:
+            return pd.DataFrame()
+        df["date"] = dt_raw[mask].str[:10]
+        df = df.drop(columns=["datetime"])  # 防止rename产生重复date列
+    elif {"year", "month", "day"}.issubset(df.columns):
+        df["date"] = (df["year"].astype(str) + "-" +
+                      df["month"].astype(str).str.zfill(2) + "-" +
+                      df["day"].astype(str).str.zfill(2))
+
+    if "date" not in df.columns:
+        return pd.DataFrame()
+
+    # 3. 统一列名
+    rename_map = {"vol": "volume", "datetime": "date"}
+    df = df.rename(columns=rename_map)
+    # 删除中间列(year/month/day/hour/minute/up_count/down_count)
+    drop_cols = [c for c in ["year", "month", "day", "hour", "minute",
+                             "up_count", "down_count", "datetime"] if c in df.columns]
+    if drop_cols:
+        df = df.drop(columns=drop_cols)
+    # rename后再次去重(vol→volume 可能与原 volume 重复)
+    df = df.loc[:, ~df.columns.duplicated()]
+
+    keep = ["date", "open", "close", "high", "low", "volume", "amount"]
+    for col in keep:
+        if col not in df.columns:
+            df[col] = 0
+    return df[keep].reset_index(drop=True)
+
+
 def get_tdx_kline(code: str, days: int = 500, period: str = "day") -> "pd.DataFrame":
     """
     获取历史K线 — mootdx TCP直连.
+    指数代码(399xxx/000300等)自动走index_bars接口.
     返回DataFrame格式({date, open, close, high, low, volume}), 兼容 sources.py.
     """
     import pandas as pd
@@ -54,17 +114,17 @@ def get_tdx_kline(code: str, days: int = 500, period: str = "day") -> "pd.DataFr
         "1min": 7, "5min": 8, "15min": 9, "30min": 10, "60min": 11,
     }
     category = period_map.get(period, 4)
+    is_index = code in _INDEX_CODES or code.startswith("399")
 
     try:
-        df = client.bars(symbol=code, category=category, offset=min(days, 800))
+        if is_index:
+            df = client.index_bars(symbol=code, category=category, offset=min(days, 800))
+        else:
+            df = client.bars(symbol=code, category=category, offset=min(days, 800))
         if df is None or (hasattr(df, 'empty') and df.empty):
             return pd.DataFrame()
 
-        # mootdx返回DataFrame: date, open, close, high, low, vol, amount
-        # 统一为sources.py格式
-        df = df.rename(columns={"vol": "volume"})
-        if "date" in df.columns:
-            df["date"] = df["date"].astype(str)
+        df = _normalize_tdx_df(df)
         logger.debug(f"[TDX] K-line {code} {period}: {len(df)} bars")
         return df
     except Exception as e:

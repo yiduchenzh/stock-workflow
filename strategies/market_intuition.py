@@ -36,8 +36,17 @@ def calc_market_anomaly(kline_df) -> dict:
         if kline_df is None or len(kline_df) < 20:
             return result
 
+        # 防御: mootdx 0.11.7 返回重复列(volume), df["volume"]会变成DataFrame
+        def _col(df, name):
+            col = df[name]
+            if isinstance(col, np.ndarray) and col.ndim > 1:
+                return col[:, 0]
+            if hasattr(col, "values"):
+                return col.values
+            return np.asarray(col, dtype=np.float64)
+
         close = np.asarray(kline_df["close"].values, dtype=np.float64)
-        volume = np.asarray(kline_df["volume"].values, dtype=np.float64)
+        volume = np.asarray(_col(kline_df, "volume"), dtype=np.float64)
         high = np.asarray(kline_df["high"].values, dtype=np.float64)
         low = np.asarray(kline_df["low"].values, dtype=np.float64)
         n = len(close)

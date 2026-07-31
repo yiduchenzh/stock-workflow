@@ -45,7 +45,8 @@ def get_northbound_minute() -> dict:
     
     Returns:
         {hgt_yi: float(沪股通累计), sgt_yi: float(深股通累计), 
-         total_yi: float(合计), direction: str(strong_inflow/inflow/neutral/outflow)}
+         total_yi: float(合计), direction: str(strong_inflow/inflow/neutral/outflow),
+         points: int(数据点数量), complete: bool(数据是否完整)}
     """
     try:
         url = "https://data.hexin.cn/market/hsgtApi/method/dayChart/"
@@ -55,9 +56,12 @@ def get_northbound_minute() -> dict:
         hgt = d.get("hgt", [])
         sgt = d.get("sgt", [])
         if not times:
-            return {"total_yi": 0, "direction": "neutral"}
+            return {"total_yi": 0, "direction": "neutral", "points": 0, "complete": False}
         
         n = len(times)
+        # 数据完整性: 深股通(sgt)同花顺接口只返回部分点(35/262), 用末值即可(当日累计)
+        sgt_points = len(sgt) if sgt else 0
+        complete = sgt_points >= 50  # <50个数据点视为不完整
         hgt_last = float(hgt[-1]) if hgt and len(hgt) > 0 else 0
         sgt_last = float(sgt[-1]) if sgt and len(sgt) > 0 else 0
         total = hgt_last + sgt_last
@@ -67,11 +71,15 @@ def get_northbound_minute() -> dict:
         elif total < -50: direction = "strong_outflow"
         elif total < -10: direction = "outflow"
         else: direction = "neutral"
+
+        if not complete:
+            logger.debug(f"[北向] 同花顺深股通数据点偏少: hgt={n} sgt={sgt_points}")
         
-        return {"hgt_yi": hgt_last, "sgt_yi": sgt_last, "total_yi": total, "direction": direction}
+        return {"hgt_yi": hgt_last, "sgt_yi": sgt_last, "total_yi": total,
+                "direction": direction, "points": n, "complete": complete}
     except Exception as e:
         logger.debug(f"[北向] 同花顺失败: {e}")
-        return {"total_yi": 0, "direction": "neutral"}
+        return {"total_yi": 0, "direction": "neutral", "points": 0, "complete": False}
 
 
 def get_northbound_score() -> int:
