@@ -1087,7 +1087,20 @@ class AuroraEngine:
             self.log.info(f"[Step6] 无新交易, 已有持仓: {len(self.positions)}只")
             return
         for p in self.plans:
-            acc.buy(p["code"], p["entry_price"], p["shares"], p.get("strategy", ""))
+            # ── 六问证据链: 买入决策上下文 ──
+            now_hhmm = datetime.now().strftime("%H:%M")
+            buy_ctx = {
+                "regime": getattr(self, "market_regime", "?"),
+                "signal": p.get("signal", p.get("mtf_decision", {}).get("action", "?")),
+                "strategy": p.get("strategy", ""),
+                "time_gate": f"{now_hhmm}@{getattr(self, 'phase', '?')}",
+                "kelly": p.get("kelly", 0),
+                "consensus": p.get("agent_consensus", 0),
+                "phase": getattr(self, "phase", "?"),
+                "score": p.get("score", 0),
+            }
+            acc.buy(p["code"], p["entry_price"], p["shares"],
+                    p.get("strategy", ""), context=buy_ctx)
         self.positions = dict(acc.positions)
         for p in self.plans:
             record_trade_result(p.get("strategy", "?"), 0, True)

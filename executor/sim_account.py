@@ -141,8 +141,20 @@ class SimAccount(BaseExecutor):
                 "order_type_advice": {},
             }
 
-    def buy(self, code: str, price: float, shares: int, reason: str = "") -> dict:
-        """模拟买入 — 含增强滑点+冲击成本 (支持微结构执行模块)"""
+    def buy(self, code: str, price: float, shares: int, reason: str = "",
+            context: dict = None) -> dict:
+        """模拟买入 — 含增强滑点+冲击成本 (支持微结构执行模块)
+
+        Args:
+            code: 股票代码
+            price: 参考价
+            shares: 股数
+            reason: 触发原因
+            context: 决策证据链(六问①-③), 可含:
+                regime(市场状态), signal(信号名), strategy(策略),
+                time_gate(时间门结果), kelly(凯利仓位), consensus(共识Agent数),
+                phase(运行阶段), note(备注)
+        """
         if shares < 100: return {"success": False, "error": "最小100股"}
         shares = int(shares / 100) * 100
 
@@ -188,12 +200,38 @@ class SimAccount(BaseExecutor):
             "fee": round(fee, 2), "total": round(total_cost, 2),
             "order_type": ms.get("order_type_advice", {}).get("order_type", "market"),
             "reason": reason, "time": datetime.now().isoformat(),
+            # ── 六问证据链: 决策上下文 (buy_what/when/how_much) ──
+            "context": context or {},
         }
         self.trades.append(trade)
         self._save()
         logger.info(f"[SIM BUY] {code} {shares}sh @{fill_price:.2f} "
                     f"slippage={slippage*100:.3f}% fee={fee:.2f}")
         return {"success": True, "trade": trade}
+
+    # ── 卖出原因分类映射 (六问⑤: 错在哪) ──
+    SELL_REASON_MAP = [
+        # (子串, 分类, 中文说明)
+        ("stop_loss", "risk_stop", "风控止损"),
+        ("breach_stop", "risk_stop", "风控止损"),
+        ("trailing", "risk_trail", "移动止盈回撤"),
+        ("take_profit", "take_profit", "止盈"),
+        ("tp", "take_profit", "止盈"),
+        ("mtf_close", "signal_exit", "信号退出"),
+        ("mtf", "signal_exit", "信号退出"),
+        ("scale_out", "partial_exit", "分批减仓"),
+        ("time", "time_exit", "超时退出"),
+        ("ghost", "housekeeping", "幽灵清理"),
+    ]
+
+    @staticmethod
+    def classify_sell_reason(reason: str) -> dict:
+        """将卖出原因归类为六问⑤可诊断分类"""
+        reason = reason or ""
+        for sub, cat, label in SimAccount.SELL_REASON_MAP:
+            if sub in reason:
+                return {"category": cat, "label": label}
+        return {"category": "manual_exit", "label": "手动/其他退出"}
 
     def sell(self, code: str, price: float, shares: int, reason: str = "") -> dict:
         """模拟卖出 — 含增强滑点+印花税 (A股T+1: 今日买入不可卖出)"""
@@ -220,10 +258,28 @@ class SimAccount(BaseExecutor):
         net = notional - commission - stamp
 
         pnl = net - shares * pos["avg_cost"]
+        avg_cost = pos["avg_cost"]
+        pnl_pct = round(pnl / (shares * avg_cost) * 100, 2) if shares > 0 and avg_cost > 0 else 0
 
         self.cash += net
         pos["shares"] -= shares
         if pos["shares"] <= 0: del self.positions[code]
+
+        # ── 六问证据链: 关联最近买入上下文 + 归因分类 ──
+        buy_ctx = {}
+        for t in reversed(self.trades):
+            if t.get("action") == "buy" and t.get("code") == code:
+                buy_ctx = t.get("context", {}) or {}
+                break
+        sell_cls = self.classify_sell_reason(reason)
+        # 持仓天数
+        holding_days = 0
+        entry_date = pos.get("entry_date") or buy_ctx.get("buy_date", "")
+        if entry_date:
+            try:
+                holding_days = (datetime.now() - datetime.strptime(str(entry_date)[:10], "%Y-%m-%d")).days
+            except Exception:
+                holding_days = 0
 
         trade = {
             "action": "sell", "code": code, "shares": shares,
@@ -234,13 +290,19 @@ class SimAccount(BaseExecutor):
             "ac_impact_pct": round(ms.get("ac_impact", 0)*100, 4),
             "commission": round(commission, 2), "stamp": round(stamp, 2),
             "net": round(net, 2), "pnl": round(pnl, 2),
-            "pnl_pct": round(pnl / (shares * pos["avg_cost"]) * 100, 2) if shares > 0 and pos["avg_cost"] > 0 else 0,
+            "pnl_pct": pnl_pct,
             "order_type": ms.get("order_type_advice", {}).get("order_type", "market"),
             "reason": reason, "time": datetime.now().isoformat(),
+            # ── 六问证据链 ──
+            "reason_category": sell_cls["category"],   # ⑤错在哪(分类)
+            "reason_label": sell_cls["label"],           # ⑤中文说明
+            "holding_days": holding_days,                # 持仓天数
+            "buy_context": buy_ctx,                      # 关联①-③决策证据
         }
         self.trades.append(trade)
         self._save()
-        logger.info(f"[SIM SELL] {code} {shares}sh @{fill_price:.2f} PnL={pnl:+.0f}")
+        logger.info(f"[SIM SELL] {code} {shares}sh @{fill_price:.2f} PnL={pnl:+.0f} "
+                    f"[{sell_cls['label']}]")
         return {"success": True, "trade": trade}
 
     def sync_positions(self) -> dict:
@@ -278,3 +340,92 @@ class SimAccount(BaseExecutor):
                     self.today_buys = d.get("today_buys", {})
             except Exception:
                 pass
+
+
+def trade_autopsy(trade: dict) -> dict:
+    """六问交易诊断 — 对每笔已完成交易生成可诊断结论
+
+    六问框架:
+      ① 买什么   buy_what: 股票/策略/信号
+      ② 何时买   buy_when: 市场状态/时间门/阶段
+      ③ 买多少   buy_how_much: 仓位/Kelly
+      ④ 结果     result: PnL/收益率/持仓天数
+      ⑤ 错在哪   where_wrong: 归因分类(选股/择时/风控/执行)
+      ⑥ 为什么对 why_right: 正收益归因(信号/策略/市场配合)
+
+    Args:
+        trade: sim_trades.json 中的卖单记录(含buy_context/reason_category)
+
+    Returns:
+        dict: 六问诊断结论
+    """
+    if not trade or trade.get("action") != "sell":
+        return {"verdict": "仅诊断已完成(卖出)交易"}
+
+    ctx = trade.get("buy_context", {}) or {}
+    reason_cls = trade.get("reason_category", "manual_exit")
+    pnl_pct = trade.get("pnl_pct", 0)
+    pnl = trade.get("pnl", 0)
+    code = trade.get("code", "?")
+
+    # ④ 结果
+    result = {
+        "pnl": round(pnl, 2),
+        "pnl_pct": pnl_pct,
+        "holding_days": trade.get("holding_days", 0),
+        "verdict": "盈利" if pnl > 0 else "亏损",
+    }
+
+    # ⑤ 错在哪 — 亏损归因
+    where_wrong = None
+    if pnl < 0:
+        blame_map = {
+            "risk_stop": "止损执行正确,但入场后趋势反向 → 选股/择时问题(①/②)",
+            "risk_trail": "止盈回撤未保住利润 → 出场纪律问题(⑤)",
+            "signal_exit": "信号反转退出 → 信号质量/择时问题(②)",
+            "time_exit": "超时未启动 → 选股失败(①)",
+            "take_profit": "止盈后继续上涨 → 止盈过早(⑤, 非错误)",
+            "partial_exit": "减仓后继续跌 → 部分正确",
+            "housekeeping": "幽灵持仓清理 → 系统状态问题",
+            "manual_exit": "手动/其他 → 需人工复盘",
+        }
+        where_wrong = blame_map.get(reason_cls, "需人工复盘")
+
+    # ⑥ 为什么对 — 盈利归因
+    why_right = None
+    if pnl > 0:
+        credit_map = {
+            "take_profit": "信号正确+止盈纪律执行到位",
+            "risk_trail": "移动止盈锁住利润",
+            "signal_exit": "信号反转及时退出,落袋为安",
+            "risk_stop": "小亏止损控制风险(保护性正确)",
+        }
+        why_right = credit_map.get(reason_cls, "信号+策略综合正确")
+
+    return {
+        "code": code,
+        "q1_buy_what": {
+            "signal": ctx.get("signal", "?"),
+            "strategy": ctx.get("strategy", "?"),
+            "consensus": ctx.get("consensus", 0),
+        },
+        "q2_buy_when": {
+            "regime": ctx.get("regime", "?"),
+            "time_gate": ctx.get("time_gate", "?"),
+            "phase": ctx.get("phase", "?"),
+        },
+        "q3_buy_how_much": {
+            "kelly": ctx.get("kelly", 0),
+            "shares": trade.get("shares", 0),
+            "entry_price": trade.get("price", 0),
+        },
+        "q4_result": result,
+        "q5_where_wrong": where_wrong,
+        "q6_why_right": why_right,
+    }
+
+
+def build_trade_autopsies(trades: list) -> list:
+    """批量生成六问诊断(供盘后复盘报告使用)"""
+    return [trade_autopsy(t) for t in trades
+            if isinstance(t, dict) and t.get("action") == "sell"]
