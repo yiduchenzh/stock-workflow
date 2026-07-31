@@ -864,6 +864,15 @@ class AuroraEngine:
                 self.log.info(f"[TimeGate] {now_hour:02d}:{now_min:02d}, 尾盘尾声, 清除计划")
                 self.plans = []
 
+        # [CloseGate] 收盘保护: ≥15:00不执行新开仓 (候选留档次日竞价执行)
+        # 防止review阶段以收盘价买入, 消除次日跳空风险
+        if self.plans and time_min >= 15 * 60:
+            kept = len(self.plans)
+            codes_kept = [p.get("code", "") for p in self.plans][:5]
+            self.log.warning(f"[CloseGate] {now_hour:02d}:{now_min:02d}, 已收盘(≥15:00), "
+                             f"清空{kept}个计划 → 次日竞价执行: {codes_kept}")
+            self.plans = []
+
         # [Opt] 板块集中度上限40%: 单板块持仓不超过总仓位40%
         if self.plans:
             try:
@@ -971,7 +980,8 @@ class AuroraEngine:
                         p["stop_loss"] = atr_s
                         p["stop_type"] = "atr"
                     else:
-                        p["stop_loss"] = entry * (1 - rp.get("stop_loss_pct", 0.08))
+                        # 兜底止损收紧: 默认5% (原8%)
+                        p["stop_loss"] = entry * (1 - rp.get("stop_loss_pct", 0.05))
                         p["stop_type"] = "fixed"
                     if aft:
                         tp = atr_take_profit(entry, entry, aft, self.market_regime)
@@ -982,7 +992,8 @@ class AuroraEngine:
                         p["take_profit"] = entry * (1 + rp.get("take_profit_pct", 0.20))
                 except:
                     rp = get_regime_config(self.market_regime).get("risk", {})
-                    p["stop_loss"] = entry * (1 - rp.get("stop_loss_pct", 0.08))
+                    # 兜底止损收紧: 默认5% (原8%)
+                    p["stop_loss"] = entry * (1 - rp.get("stop_loss_pct", 0.05))
                     p["take_profit"] = entry * (1 + rp.get("take_profit_pct", 0.20))
         except Exception:
             pass

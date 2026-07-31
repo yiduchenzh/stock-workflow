@@ -85,16 +85,18 @@ REGIME_SCREENING_STRATEGY = {
     "bull_strong": {
         "prefer_signals": ["momentum_breakout", "first_board", "ma_breakout", "chan_buy3", "naked_engulf"],
         "avoid_signals": ["mean_reversion", "chan_buy1"],
-        "min_turnover": 0.5,      # 强势行情需要放量确认
-        "min_vol_ratio": 0.8,
+        # 2026-07-31优化: 牛市放宽阈值(原0.5/0.8全市场最严导致踏空)
+        # 牛市行情应提高参与度, 放量确认但不过滤
+        "min_turnover": 0.2,
+        "min_vol_ratio": 0.4,
         "bearish_filter": False,   # 不额外过滤
         "bearish_confirm_msgs": [],  # 不需要确认信息
     },
     "bull_weak": {
         "prefer_signals": ["momentum_breakout", "sector_rotation", "chan_buy2", "chan_buy3", "wave_point"],
         "avoid_signals": ["mean_reversion", "first_board"],
-        "min_turnover": 0.3,
-        "min_vol_ratio": 0.5,
+        "min_turnover": 0.25,
+        "min_vol_ratio": 0.4,
         "bearish_filter": False,
         "bearish_confirm_msgs": [],
     },

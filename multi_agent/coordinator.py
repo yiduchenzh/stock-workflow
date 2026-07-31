@@ -80,14 +80,28 @@ class MultiAgentCoordinator:
             for name in self.agents:
                 agent = self.agents.get(name)
                 if agent and agent.engine:
-                    candidates = getattr(agent.engine, 'candidates', None) or getattr(agent.engine, 'analysis', None) or []
-                    if candidates:
-                        sw.collect(name, candidates)
+                    # 优先取analysis(含best_score/best_strategy/signal),
+                    # candidates仅是粗筛无评分
+                    candidates = (getattr(agent.engine, 'analysis', None)
+                                  or getattr(agent.engine, 'candidates', None) or [])
+                    # 只收集有信号的候选(评分才有意义)
+                    scored = []
+                    for c in candidates:
+                        if not isinstance(c, dict):
+                            continue
+                        if c.get("signal") is False:
+                            continue
+                        # 补充分数字段兼容
+                        if "best_score" not in c and "score" not in c:
+                            c["score"] = c.get("composite_score", c.get("total_score", 0))
+                        scored.append(c)
+                    if scored:
+                        sw.collect(name, scored)
             heatmap = sw.get_heatmap(min_agents=2)
             if heatmap:
                 logger.info(f"[Shared] 多Agent共识候选: {len(heatmap)}只")
                 for s in heatmap[:5]:
-                    logger.info(f"  ⭐ {s['code']} {s['name']}: {s['agents_count']}个Agent {s['strategies']}")
+                    logger.info(f"  ⭐ {s['code']} {s['name']}: {s['agents_count']}个Agent {s['strategies']} 评分{s['avg_score']}")
             else:
                 logger.info("[Shared] 无2+Agent共识候选")
         except Exception as e:

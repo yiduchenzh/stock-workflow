@@ -163,9 +163,9 @@ def get_risk_adjusted_stop(entry_price, current_price, klines, market_regime, cu
     atr = calc_atr(klines)
     atr_stop = atr_stop_loss(entry_price, current_price, atr, market_regime) if atr else None
     
-    # 固定%止损(兜底)
-    pct_map = {"bull_strong":0.08,"bull_weak":0.07,"range":0.06,"bear_weak":0.05,"bear_strong":0.04}
-    pct = pct_map.get(market_regime, 0.06)
+    # 固定%止损(兜底) — 2026-07-31优化: 8%→5%收紧, 单笔亏损控制在可接受范围
+    pct_map = {"bull_strong":0.05,"bull_weak":0.045,"range":0.04,"bear_weak":0.035,"bear_strong":0.03}
+    pct = pct_map.get(market_regime, 0.04)
     fixed_stop = round(entry_price * (1 - pct), 2)
     
     # 取较严者
