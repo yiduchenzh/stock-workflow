@@ -47,8 +47,8 @@ def _unlock_file(name: str):
 # ── 辅助函数 ──
 
 def _prefix(code):
-    """6位代码 → 腾讯格式前缀 (sh/sz/bj)"""
-    if code.startswith(("8", "4")):
+    """6位代码 → 腾讯格式前缀 (sh/sz/bj) — v14.41: 修复92开头北交所(920xxx新代码段)"""
+    if code.startswith(("8", "4", "92")):
         return f"bj{code}"
     return f"sh{code}" if code.startswith(("6", "9")) else f"sz{code}"
 
@@ -336,28 +336,31 @@ def get_index_snapshot(codes):
 
 
 def get_market_breadth() -> dict:
-    """市场广度: 涨跌比 — 腾讯分层采样"""
+    """市场广度: 涨跌比 — 腾讯分层采样 (v14.41: 修复advance_ratio键+扩大采样至1000只)"""
     try:
         codes = get_real_stock_list()
-        # 分层采样: 前100 + 中100 (覆盖大/中市值)
+        # 分层采样: 前200大市值 + 中间300 + 后500小市值 (覆盖大/中/小市值, 避免权重股偏差)
         n = len(codes)
-        if n > 500:
-            sample = codes[:100] + codes[n // 2 - 50:n // 2 + 50]
+        if n > 1000:
+            sample = codes[:200] + codes[n // 2 - 150:n // 2 + 150] + codes[-500:]
         else:
             sample = codes[:200]
         quotes = get_tencent_quotes(sample)
         if not quotes:
-            return {"ad_score": 0, "up_count": 0, "down_count": 0}
+            return {"ad_score": 0, "up_count": 0, "down_count": 0, "advance_ratio": 0.5,
+                    "total_sampled": 0}
         changes = [q.get("change_pct", 0) for q in quotes.values()]
         up = sum(1 for c in changes if c > 0)
         down = sum(1 for c in changes if c < 0)
         total = up + down or 1
         ratio = up / total
         return {"ad_score": int(min(max((ratio - 0.3) / 0.4 * 60, 0), 60)),
-                "up_count": up, "down_count": down}
+                "up_count": up, "down_count": down,
+                "advance_ratio": round(ratio, 3), "total_sampled": len(quotes)}
     except Exception as e:
         logger.warning(f"Breadth fail: {e}")
-        return {"ad_score": 0, "up_count": 0, "down_count": 0}
+        return {"ad_score": 0, "up_count": 0, "down_count": 0, "advance_ratio": 0.5,
+                "total_sampled": 0}
 
 
 # ═══════════════════════════════════════════════════════════
@@ -459,8 +462,12 @@ def get_real_stock_list() -> list:
         if STOCK_CACHE.exists():
             data = _j.loads(STOCK_CACHE.read_text())
             if time.time() - data.get("time", 0) < STOCK_CACHE_TTL:
-                logger.info(f"[Cache] {len(data.get('codes', []))} stocks")
-                return data["codes"]
+                cached = data["codes"]
+                # v14.41: 缓存路径同样过滤B股
+                if any(c.startswith(("20", "90")) for c in cached[:50]):
+                    cached = [c for c in cached if not c.startswith(("20", "90"))]
+                logger.info(f"[Cache] {len(cached)} stocks")
+                return cached
     except Exception:
         pass
 
@@ -469,6 +476,8 @@ def get_real_stock_list() -> list:
     # 1. 巨潮 (全市场最全)
     codes = _cninfo_stock_list()
     if len(codes) >= 4000:
+        # v14.41: 过滤B股(20深B/90沪B非A股), 保留92北交所
+        codes = [c for c in codes if not c.startswith(("20", "90"))]
         try:
             STOCK_CACHE.write_text(_j.dumps({"time": time.time(), "codes": codes}))
         except Exception:
@@ -697,16 +706,36 @@ def get_top_sectors(top_n=5):
 
 
 def get_limit_up_count():
-    """获取涨停股票数量(近似) — 东财"""
+    """获取涨停股票数量(近似) — v14.41: 东财push2被WAF屏蔽, 改用腾讯全市场采样统计
+    涨停判定: 主板涨幅>=9.8%, 创业板/科创板>=19.5% (近似, 采样2000只)
+    """
     try:
-        url = "https://push2.eastmoney.com/api/qt/clist/get?cb=&pn=1&pz=10&po=1&np=1&fields=f12,f14,f3&fid=f3&fs=m:90+t:3"
-        data = urllib.request.urlopen(
-            urllib.request.Request(url, headers={"User-Agent": UA}), timeout=5
-        ).read().decode("utf-8")
-        matches = _re.findall(r'"total":(\d+)', data)
-        if matches:
-            return int(matches[0])
-        return 0
+        # 腾讯批量查询全市场股票, 统计涨幅达涨停阈值的数量
+        codes = get_real_stock_list()
+        if not codes:
+            return 0
+        # 采样: 前500 + 中500 + 后1000, 覆盖大中小市值
+        n = len(codes)
+        sample = codes[:500] + codes[n // 2 - 250:n // 2 + 250] + codes[-1000:]
+        quotes = get_tencent_quotes(sample)
+        if not quotes:
+            return 0
+        cnt = 0
+        for c, q in quotes.items():
+            chg = q.get("change_pct", 0) or 0
+            # 创业板(30x)/科创板(68x)涨停20%, 主板10%, 北交所(8/4开头)30%
+            if c.startswith(("30", "68")):
+                if chg >= 19.5:
+                    cnt += 1
+            elif c.startswith(("8", "4")):
+                if chg >= 29.5:
+                    cnt += 1
+            else:
+                if chg >= 9.8:
+                    cnt += 1
+        # 采样2000只覆盖约1/3市场, 按比例外推
+        ratio = len(sample) / max(n, 1)
+        return int(cnt / ratio) if ratio > 0 else cnt
     except Exception:
         return 0
 

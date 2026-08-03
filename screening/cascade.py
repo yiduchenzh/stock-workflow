@@ -29,9 +29,9 @@ def cascade_screen(cfg: dict, phase: str = "monitor") -> list:
         logger.warning("无法获取股票列表")
         return []
 
-    # Batch query (limit to avoid API overload)
-    batch = codes[:6000]  # 沪深京全市场
-    quotes = get_tencent_quotes(batch)
+    # Batch query (v14.41: 全量查询, 92北交所已修复前缀, 不再截断6000)
+    codes = [c for c in codes if not c.startswith(("20", "90"))]  # 双保险: 过滤B股
+    quotes = get_tencent_quotes(codes)
     candidates = []
     for code, q in quotes.items():
         pe = q.get("pe", 0)

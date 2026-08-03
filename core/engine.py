@@ -181,7 +181,8 @@ class AuroraEngine:
         sec_score = int(min(sec_up / max(len(sectors), 1) * 100, 100))
         nb_score = self._calc_northbound_score()
         macro_score = self._calc_macro_score()
-        total = idx_score * 0.30 + ad_score * 0.10 + sec_score * 0.10 + nb_score * 0.20 + macro_score * 0.20 + 50 * 0.10
+        # v14.41: 权重重构 — 个股广度25% > 指数20% (指数受权重股绑架, 广度反映真实赚钱效应)
+        total = idx_score * 0.20 + ad_score * 0.25 + sec_score * 0.10 + nb_score * 0.15 + macro_score * 0.20 + 50 * 0.10
 
         try:
             limit_up_cnt = get_limit_up_count() or 0
@@ -421,6 +422,26 @@ class AuroraEngine:
             self.analysis = []
             return
         self.analysis = analyze_all(candidates, market_regime=self.market_regime)
+        # ── v14.41: 新股过滤 (min_listed_days配置此前从未实现) ──
+        try:
+            min_days = int(self.cfg.get("screening", {}).get("coarse", {}).get("min_listed_days", 100) or 0)
+            if min_days > 0:
+                before = len(self.analysis)
+                kept = []
+                for a in self.analysis:
+                    kdf = a.get("kline_df")
+                    n = len(kdf) if kdf is not None and hasattr(kdf, "__len__") else None
+                    if n is None:
+                        kept.append(a)  # 无K线不误杀(数据缺失时跳过)
+                    elif n >= min_days:
+                        kept.append(a)
+                    else:
+                        self.log.debug(f"  [NewStockFilter] {a.get('code','')}: K线{n}根<{min_days}天, 新股排除")
+                if before - len(kept) > 0:
+                    self.log.info(f"[NewStockFilter] 新股过滤: 排除{before-len(kept)}只, 剩{len(kept)}只")
+                self.analysis = kept
+        except Exception as e:
+            self.log.debug(f"[NewStockFilter] 跳过: {e}")
         # ── P1升级: Regime感知信号偏好调整 ──
         try:
             regime_screen = getattr(self, 'regime_screening', None)
