@@ -1018,7 +1018,11 @@ class AuroraEngine:
                     p["take_profit"] = entry * (1 + rp.get("take_profit_pct", 0.20))
         except Exception:
             pass
-        day_start = getattr(self, "_day_start_value", self.capital)
+        day_start = getattr(self, "_day_start_value", None)
+        # v14.41: _day_start_value未设置(直接调step不走run())时, 用账户加载时的总资产(prev_total)作基准
+        # 不能用capital(初始资金) — 会把历史累计亏损误判为当日亏损, 误触Fuse熔断
+        if not day_start or day_start == self.capital:
+            day_start = getattr(getattr(self, "account", None), "prev_total", self.capital)
         current = getattr(self.account, "total_value", day_start)
         daily_loss = (current - day_start) / day_start if day_start > 0 else 0
         if daily_loss < -0.03:
@@ -1096,7 +1100,10 @@ class AuroraEngine:
         # ── 每日PnL记录到预算(即使无交易) ──
         try:
             from risk.budget import RiskBudget
-            day_start = getattr(self, "_day_start_value", self.capital)
+            day_start = getattr(self, "_day_start_value", None)
+            # v14.41: 同step_risk — 基准用prev_total而非capital, 防历史亏损误判为当日亏损
+            if not day_start or day_start == self.capital:
+                day_start = getattr(acc, "prev_total", self.capital)
             current = getattr(acc, "total_value", day_start)
             daily_pnl = (current - day_start) / day_start if day_start > 0 else 0
             budget = RiskBudget(self.cfg, self.capital)

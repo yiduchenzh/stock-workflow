@@ -332,6 +332,8 @@ class SimAccount(BaseExecutor):
                 d = json.loads(STATE.read_text())
                 self.cash = d.get("cash", self.capital)
                 self.positions = d.get("positions", {})
+                # v14.41: 记录加载时的总资产(昨收/上次保存), 供engine计算"今日盈亏"基准
+                self.prev_total = float(d.get("total", self.total_value))
                 saved_date = d.get("date", "")
                 today = str(datetime.now().date())
                 if saved_date != today:

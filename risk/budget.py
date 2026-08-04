@@ -11,12 +11,20 @@
     budget.record_pnl(daily_pnl)  # 每日记录
     budget.reset_weekly()  # 每周一重置
 """
-import json, logging, time
+import json, logging, time, os
 from pathlib import Path
 
 logger = logging.getLogger("aurora.budget")
 
-BUDGET_FILE = Path(__file__).resolve().parent.parent / "data" / "risk_budget.json"
+# v14.41: 按AURORA_AGENT隔离budget文件(与risk_state/recovery_state一致), 防6Agent互相污染
+# 注意: 6Agent在同一进程串行运行, 不能用模块级变量(首次import固定), 必须实例化时动态计算
+def _budget_file_path():
+    agent = os.environ.get("AURORA_AGENT")
+    if agent:
+        return Path(__file__).resolve().parent.parent / "data" / f"risk_budget_{agent}.json"
+    return Path(__file__).resolve().parent.parent / "data" / "risk_budget.json"
+
+BUDGET_FILE = _budget_file_path()  # 兼容外部直接引用(单引擎场景)
 
 
 class RiskBudget:
@@ -32,10 +40,14 @@ class RiskBudget:
         self.reset_on_friday = budget_cfg.get("reset_on_friday", True)
         self.state = self._load()
 
+    def _file(self) -> Path:
+        """v14.41: 动态文件路径 — 实例化时读AURORA_AGENT(6Agent同进程串行场景必须动态)"""
+        return _budget_file_path()
+
     def _load(self) -> dict:
         try:
-            if BUDGET_FILE.exists():
-                return json.loads(BUDGET_FILE.read_text())
+            if self._file().exists():
+                return json.loads(self._file().read_text(encoding="utf-8"))
         except Exception:
             pass
         return {
@@ -46,22 +58,37 @@ class RiskBudget:
             "peak_value": self.capital,
             "current_value": self.capital,
             "drawdown_pct": 0.0,
+            "last_record_date": "",
             "last_update": "",
         }
 
     def _save(self):
         try:
-            BUDGET_FILE.parent.mkdir(parents=True, exist_ok=True)
-            BUDGET_FILE.write_text(json.dumps(self.state, indent=2, ensure_ascii=False))
+            self._file().parent.mkdir(parents=True, exist_ok=True)
+            self._file().write_text(json.dumps(self.state, indent=2, ensure_ascii=False), encoding="utf-8")
         except Exception as e:
             logger.debug(f"[Budget] save: {e}")
 
     def record_pnl(self, daily_pnl_pct: float, current_value: float = None):
-        """每日记录PnL"""
+        """每日记录PnL — v14.41: 按日期去重, 同日多次扫描只累加一次, 防虚增"""
         now = time.time()
         day_secs = 86400
         week_secs = day_secs * 7
         month_secs = day_secs * 30
+        today_str = time.strftime("%Y-%m-%d")
+
+        # 同日去重: 当天已记录过则只更新净值/回撤, 不重复累加盈亏
+        if self.state.get("last_record_date") == today_str:
+            if current_value:
+                self.state["current_value"] = current_value
+                if current_value > self.state.get("peak_value", 0):
+                    self.state["peak_value"] = current_value
+                peak = self.state.get("peak_value", 1) or 1
+                self.state["drawdown_pct"] = (current_value - peak) / max(peak, 1)
+                self.state["drawdown_pct"] = max(-1.0, min(0.0, self.state["drawdown_pct"]))
+            self.state["last_update"] = str(time.strftime("%Y-%m-%d %H:%M"))
+            self._save()
+            return
 
         # 周预算滚动
         if now - self.state["weekly_start"] > week_secs:
@@ -85,6 +112,7 @@ class RiskBudget:
             self.state["drawdown_pct"] = (current_value - self.state["peak_value"]) / max(self.state["peak_value"], 1)
             self.state["drawdown_pct"] = max(-1.0, min(0.0, self.state["drawdown_pct"]))
 
+        self.state["last_record_date"] = today_str
         self.state["last_update"] = str(time.strftime("%Y-%m-%d %H:%M"))
         self._save()
 
