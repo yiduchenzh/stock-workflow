@@ -140,14 +140,14 @@ AGENT_TRADING_STYLES = {
         "bear_allow_trade": True,       # 熊市允许交易
         "bear_max_positions": 2,        # 熊市最多2只
     },
-    "全职短线客": {
+    "短线狙击手": {
         "monitor_interval": 10,         # 每10分钟检查持仓(高频)
-        "trend_health_threshold": 60,   # 健康度<60即减仓(敏感)
+        "trend_health_threshold": 55,   # 健康度<55即减仓(敏感)
         "exit_style": "aggressive",     # 激进退出
         "max_hold_days": 3,             # 最长持仓3天
-        "trailing_activation": 0.03,    # 盈利3%启动移动止盈
-        "stop_loss_pct": 0.03,          # 3%硬止损
-        "take_profit_pct": 0.06,        # 6%止盈
+        "trailing_activation": 0.04,    # 盈利4%启动移动止盈
+        "stop_loss_pct": 0.04,          # 4%硬止损
+        "take_profit_pct": 0.08,        # 8%止盈
         "bear_allow_trade": True,       # 熊市允许交易(做超短反弹)
         "bear_max_positions": 1,        # 熊市最多1只
     },
@@ -171,17 +171,6 @@ AGENT_TRADING_STYLES = {
         "stop_loss_pct": 0.03,          # 3%硬止损(严)
         "take_profit_pct": 0.06,        # 6%止盈(小)
         "bear_allow_trade": False,      # 熊市不交易
-        "bear_max_positions": 0,
-    },
-    "消息面短线": {
-        "monitor_interval": 15,         # 每15分钟检查
-        "trend_health_threshold": 50,
-        "exit_style": "news_driven",    # 消息驱动退出
-        "max_hold_days": 3,
-        "trailing_activation": 0.05,
-        "stop_loss_pct": 0.05,
-        "take_profit_pct": 0.10,
-        "bear_allow_trade": False,      # 熊市消息股退潮快，不交易
         "bear_max_positions": 0,
     },
     "价值投资者": {

@@ -75,8 +75,8 @@ class TraderAgent:
         self.engine.phase = phase
         self.engine.account = self.account
         self.engine.positions = dict(self.account.positions)
-        # MTF方案分配: 前3个Agent用A(周线日线60分), 后3个用B(日线小时15分)
-        scheme_a = ["上班族中短线", "全职短线客", "趋势跟踪者"]
+        # MTF方案分配: 前3个Agent用A(周线日线60分), 后2个用B(日线小时15分)
+        scheme_a = ["上班族中短线", "短线狙击手", "趋势跟踪者"]
         self.engine.mtf_scheme = "A" if self.profile_name in scheme_a else "B"
         # [Opt] 分类施策: 注入Agent专属筛参数
         from profiling.strategy_mapping import get_screening_params

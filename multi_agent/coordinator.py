@@ -9,10 +9,9 @@ logger = logging.getLogger("aurora.coordinator")
 
 ALL_PROFILES = [
     "上班族中短线",
-    "全职短线客",
+    "短线狙击手",
     "趋势跟踪者",
     "新手入门",
-    "消息面短线",
     "价值投资者",
 ]
 

@@ -482,7 +482,9 @@ class AuroraEngine:
             if not a.get("signal"):
                 continue
             kline_data = {"df": a.get("kline_df")} if a.get("kline_df") is not None else None
-            passed, conf, checks = confirm_entry(a, kline_data)
+            # v14.42: 传profile_name启用短线差异化确认
+            passed, conf, checks = confirm_entry(a, kline_data,
+                                                 profile_name=getattr(self, "profile_name", None))
             a["confirmed"] = passed
             a["confidence"] = round(conf, 2)
             a["checks"] = checks
