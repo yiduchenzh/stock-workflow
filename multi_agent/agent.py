@@ -120,7 +120,9 @@ class AgentSimAccount:
     """Agent专用模拟账户 — 继承SimAccount核心逻辑, 使用独立文件"""
     def __init__(self, capital, cfg, state_path, trades_path):
         from executor.sim_account import SimAccount
-        self._inner = SimAccount(capital, cfg)
+        # v14.41e: _inner注入独立路径, 防止写全局sim_state.json污染主账户
+        self._inner = SimAccount(capital, cfg, state_path=Path(state_path),
+                                 trades_path=Path(trades_path))
         self.capital = capital
         self.cfg = cfg
         self.state_path = Path(state_path)
@@ -139,6 +141,8 @@ class AgentSimAccount:
                 self.cash = d.get("cash", self.capital)
                 self.positions = {k: dict(v) for k, v in d.get("positions", {}).items()}
                 self.today_buys = dict(d.get("today_buys", {}))
+                # v14.41d: 记录加载时的总资产(昨收/上次保存), 供engine计算"今日盈亏"基准
+                self.prev_total = float(d.get("total", self.total_value))
                 saved_date = d.get("date", "")
                 if saved_date and saved_date != str(datetime.now().date()):
                     self.today_buys = {}
@@ -165,9 +169,9 @@ class AgentSimAccount:
                  for p in self.positions.values())
         self.total_value = self.cash + pv
 
-    def buy(self, code, price, shares, reason=""):
-        """委托给_inner处理, 再同步回自身"""
-        r = self._inner.buy(code, price, shares, reason)
+    def buy(self, code, price, shares, reason="", context=None):
+        """委托给_inner处理, 再同步回自身 (v14.41e: 支持六问证据链context参数)"""
+        r = self._inner.buy(code, price, shares, reason, context=context)
         if r.get("success"):
             self.cash = self._inner.cash
             self.positions = dict(self._inner.positions)

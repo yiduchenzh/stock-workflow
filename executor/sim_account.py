@@ -40,9 +40,13 @@ del _TF, _insp
 class SimAccount(BaseExecutor):
     """高仿真模拟账户 — 模拟真实市场微观结构"""
 
-    def __init__(self, capital: float = 1_000_000, config: dict = None):
+    def __init__(self, capital: float = 1_000_000, config: dict = None,
+                 state_path: Path = None, trades_path: Path = None):
         super().__init__(capital)
         self.config = config or {}
+        # v14.41e: 支持注入独立状态文件路径(AgentSimAccount用), 默认全局sim_state.json
+        self.state_path = state_path or STATE
+        self.trades_path = trades_path or TRADES
         self.commission = 0.0003      # 佣金0.03%
         self.stamp_tax = 0.001        # 印花税0.1% (仅卖出)
         self.slippage_base = 0.001     # 基础滑点0.1%
@@ -318,18 +322,22 @@ class SimAccount(BaseExecutor):
         }
 
     def _save(self):
-        DATA.mkdir(parents=True, exist_ok=True)
-        STATE.write_text(json.dumps({
+        p = self.state_path or STATE
+        tp = self.trades_path or TRADES
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({
             "capital": self.capital, "cash": round(self.cash, 2),
             "positions": self.positions, "total": round(self.total_value, 2),
             "today_buys": self.today_buys, "date": str(datetime.now().date()),
         }, indent=2, ensure_ascii=False))
-        TRADES.write_text(json.dumps(self.trades[-500:], indent=2, ensure_ascii=False))
+        tp.write_text(json.dumps(self.trades[-500:], indent=2, ensure_ascii=False))
 
     def _load(self):
-        if STATE.exists():
+        p = self.state_path or STATE
+        tp = self.trades_path or TRADES
+        if p.exists():
             try:
-                d = json.loads(STATE.read_text())
+                d = json.loads(p.read_text())
                 self.cash = d.get("cash", self.capital)
                 self.positions = d.get("positions", {})
                 # v14.41: 记录加载时的总资产(昨收/上次保存), 供engine计算"今日盈亏"基准
@@ -342,6 +350,11 @@ class SimAccount(BaseExecutor):
                     self.today_buys = d.get("today_buys", {})
             except Exception:
                 pass
+        if tp.exists():
+            try:
+                self.trades = json.loads(tp.read_text()) or []
+            except Exception:
+                self.trades = []
 
 
 def trade_autopsy(trade: dict) -> dict:
