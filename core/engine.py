@@ -375,6 +375,13 @@ class AuroraEngine:
         except Exception as e:
             self.log.debug(f"[RegimeScreen] 注入失败: {e}")
         self.candidates = cascade_screen(self.cfg, phase=getattr(self, 'phase', 'monitor'))
+        # v14.44: 跨Agent去重 — 排除已被其他Agent持有的股票(防多Agent重复买入同质化)
+        _excl = getattr(self, "agent_exclude_codes", None)
+        if _excl:
+            before = len(self.candidates)
+            self.candidates = [c for c in self.candidates if c.get("code") not in _excl]
+            if len(self.candidates) < before:
+                self.log.info(f"[Dedup] 排除{before - len(self.candidates)}只已被其他Agent持有")
         if not self.candidates:
             self.log.info(f"[Cascade] 0 candidates")
             return

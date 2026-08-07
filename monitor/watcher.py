@@ -15,16 +15,21 @@ def watch_positions(positions: dict, cfg: dict) -> list:
         quotes = get_tencent_quotes(codes)
         alerts = []
         risk_cfg = cfg.get("risk", {})
-        # 修复P0: 优先使用profile的stop_loss_pct, 其次才是hard_pct
+        # 修复P0(v14.44): 单位bug — stop_loss_pct来自trader_types是小数(0.05=5%),
+        # 原代码/100再乘导致止损距离0.05%(噪声洗出)。修正: 小数直接用。
         profile_sl = risk_cfg.get("stop_loss_pct", None)
         hard_pct = risk_cfg.get("stop_loss", {}).get("hard_pct", 5.0)
-        stop_loss_pct = profile_sl if profile_sl is not None else hard_pct
+        # hard_pct是百分数(5.0=5%)需/100; profile_sl是小数(0.05=5%)直接用
+        if profile_sl is not None:
+            stop_loss_pct = profile_sl  # 小数: 0.05 = 5%
+        else:
+            stop_loss_pct = hard_pct / 100.0  # 百分数转小数
         for code, pos in positions.items():
             q = quotes.get(code, {})
             cur = q.get("price", pos.get("current_price", pos.get("avg_cost", 0)))
             entry = pos.get("avg_cost", cur)
 
-            sl = pos.get("stop_loss", entry * (1 - stop_loss_pct / 100))
+            sl = pos.get("stop_loss", entry * (1 - stop_loss_pct))
             if cur <= sl:
                 alerts.append({"type": "stop_loss", "code": code, "price": cur, "stop": sl})
                 _trailing_stops.pop(code, None)

@@ -154,13 +154,13 @@ def synthesize(daily: dict, m30: dict, m5: dict) -> dict:
             return {"action": "close_long", "confidence": "medium",
                     "desc": f"二级共振卖出 | 日{m5_dir_to_chr(main_dir)} 30分{m5_dir_to_chr(m30_dir)} 5分{m5_signal}"}
     
-    # 仅日线方向
+    # 仅日线方向 (v14.44: 收紧阈值 — 单日线触发须score≤20极空+30分不偏多, 防正常波动误减仓)
     if main_dir == "bull" and daily.get("score", 0) >= 70:
         return {"action": "hold", "confidence": "low",
                 "desc": f"日线偏多,持有观察 | 5分{m5_signal}"}
-    if main_dir == "bear" and daily.get("score", 0) <= 30:
+    if main_dir == "bear" and daily.get("score", 0) <= 20 and m30_dir != "bull":
         return {"action": "reduce", "confidence": "low",
-                "desc": f"日线偏空,减仓避险 | 5分{m5_signal}"}
+                "desc": f"日线极空,减仓避险 | 30分{m5_dir_to_chr(m30_dir)} 5分{m5_signal}"}
     
     return {"action": "wait", "confidence": "low",
             "desc": f"观望 | 日{m5_dir_to_chr(main_dir)} 30分{m5_dir_to_chr(m30_dir)} 5分{m5_signal}"}

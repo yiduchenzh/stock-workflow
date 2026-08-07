@@ -42,13 +42,23 @@ class MultiAgentCoordinator:
         return count
 
     def run_all_morning(self):
-        """所有Agent执行晨盘"""
+        """所有Agent执行晨盘 (v14.44: 跨Agent持仓去重 — 后跑Agent跳过已被持有股票)"""
         results = {}
+        held_global = {}  # code -> [agents持有列表]
         for name, agent in self.agents.items():
             try:
+                # 注入已持有股票(前面Agent)到本Agent排除列表
+                if held_global:
+                    exclude = set(held_global.keys())
+                    if hasattr(agent, 'engine') and agent.engine:
+                        agent.engine.agent_exclude_codes = exclude
+                        logger.info(f"[Dedup] {name} 排除{len(exclude)}只已被持有: "
+                                    f"{sorted(exclude)[:5]}{'...' if len(exclude) > 5 else ''}")
                 agent.run_morning()
                 results[name] = agent.get_summary()
                 logger.info(f"[Coord] {name} 晨盘完成: {results[name]['total_value']:.0f}")
+                # 记录本Agent新持仓到全局去重表
+                self._update_held(held_global, agent)
             except Exception as e:
                 logger.error(f"[Coord] {name} 晨盘失败: {e}")
                 results[name] = {"error": str(e)}
@@ -58,18 +68,33 @@ class MultiAgentCoordinator:
         return results
 
     def run_all_intraday(self):
-        """所有Agent执行盘中扫描"""
+        """所有Agent执行盘中扫描 (v14.44: 跨Agent持仓去重)"""
         results = {}
+        held_global = {}
         for name, agent in self.agents.items():
             try:
+                if held_global:
+                    exclude = set(held_global.keys())
+                    if hasattr(agent, 'engine') and agent.engine:
+                        agent.engine.agent_exclude_codes = exclude
                 agent.run_intraday()
                 results[name] = agent.get_summary()
+                self._update_held(held_global, agent)
             except Exception as e:
                 logger.error(f"[Coord] {name} 盘中失败: {e}")
         self._save_aggregate()
         # ── P2升级: 收集Agent候选到共享池 ──
         self._collect_shared_candidates(results)
         return results
+
+    def _update_held(self, held_global: dict, agent):
+        """将Agent持仓合并进全局去重表"""
+        try:
+            if hasattr(agent, 'engine') and agent.engine and hasattr(agent.engine, 'positions'):
+                for code in (agent.engine.positions or {}):
+                    held_global.setdefault(code, []).append(agent.profile_name)
+        except Exception:
+            pass
 
     def _collect_shared_candidates(self, results: dict):
         """收集每个Agent的候选股到共享池"""
