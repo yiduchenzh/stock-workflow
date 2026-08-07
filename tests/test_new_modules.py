@@ -51,8 +51,10 @@ class TestProfiling:
     def test_short_sniper_config(self):
         from profiling import get_engine_config
         c = get_engine_config("短线狙击手")
-        assert c["strategy_weights"]["momentum_breakout"] >= 2.0
-        assert c["risk"]["stop_loss_pct"] == 0.04
+        # v14.45: 短线狙击手切换昨收价战法 — prev_close_A权重最高
+        assert c["strategy_weights"]["prev_close_A"] >= 2.0
+        assert c["strategy_weights"]["prev_close_B"] >= 2.0
+        assert c["risk"]["stop_loss_pct"] == 0.05
     def test_questionnaire(self):
         from profiling.questionnaire import evaluate
         r = evaluate({"q1":"A","q2":"C","q3":"A","q4":"A","q5":"A"})

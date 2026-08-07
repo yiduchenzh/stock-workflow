@@ -18,10 +18,11 @@ TRADER_PROFILES = {
         "description": "适合朝九晚五的上班族，日线级别波段操作，低维护成本",
     },
     "短线狙击手": {
-        "code": "short_sniper", "holding_period": "1-3天", "risk_tolerance": "进取(<18%)", "screen_time": "全职(8h)", "analysis_style": "技术面+板块共振", "trader_level": "高级",
-        "primary_kline": "60min", "secondary_kline": "15min", "min_kline_days": 60,
-        "strategy_weights": {"momentum_breakout": 2.5, "sector_rotation": 1.5, "wave_point": 0.5, "mean_reversion": 0.0},
-        "risk": {"stop_loss_pct": 0.04, "take_profit_pct": 0.08, "max_position_pct": 0.28, "max_positions": 7, "daily_loss_limit_pct": -5.0, "kelly_fraction": 0.75, "trailing_stop_activation": 0.04, "trailing_stop_distance": 0.025},
+        "code": "short_sniper", "holding_period": "1-3天", "risk_tolerance": "进取(<18%)", "screen_time": "全职(8h)", "analysis_style": "昨收价极简战法+板块共振", "trader_level": "高级",
+        "primary_kline": "daily", "secondary_kline": "60min", "min_kline_days": 60,
+        # v14.45: 短线狙击手切换为昨收价极简战法(用户实盘体系) — 买点A/B权重最高
+        "strategy_weights": {"prev_close_A": 3.0, "prev_close_B": 2.5, "sector_rotation": 1.5, "momentum_breakout": 0.8, "wave_point": 0.3, "mean_reversion": 0.0},
+        "risk": {"stop_loss_pct": 0.05, "take_profit_pct": 0.10, "max_position_pct": 0.28, "max_positions": 7, "daily_loss_limit_pct": -5.0, "kelly_fraction": 0.75, "trailing_stop_activation": 0.04, "trailing_stop_distance": 0.025},
         "market": {"min_score_to_trade": 30, "min_score_to_full": 55, "bear_regime_stop": False},
         "coach_style": "果断冷静", "push_frequency": "实时推送", "training_focus": ["情绪管理", "信息甄别"],
         "description": "全职短线狙击手 — 合并原全职短线客(技术突破)+消息面短线(板块事件驱动)的双驱动风格，1-3天快进快出",

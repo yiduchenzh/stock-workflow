@@ -143,6 +143,15 @@ def analyze_all(candidates: list, kline_override: dict = None, market_regime: st
         except Exception:
             pass
 
+        # 昨收价极简战法信号 (v14.45: 短线专属 — 买点A挖坑转强/买点B强势延续)
+        try:
+            from strategies.prev_close_play import check_prev_close
+            pc_sig = check_prev_close(kline)
+            if pc_sig["signal"]:
+                signals.append(("prev_close_" + pc_sig["type"], pc_sig["score"], price))
+        except Exception as e:
+            logger.debug(f"[PrevClose] {code}: {e}")
+
         # 多战法投票 (双重确认: 需要≥2个信号)
         if len(signals) >= 2:
             weighted_score = sum(s[1] for s in signals) / len(signals) + 10

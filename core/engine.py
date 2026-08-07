@@ -1187,6 +1187,32 @@ class AuroraEngine:
             self.log.debug(f"  [CorpAct] check fail: {e}")
         alerts = watch_positions(self.positions, self.cfg)
         self.alerts.extend(alerts)
+        # v14.45: 昨收价极简战法离场 — 短线狙击手持仓跌破昨收即卖(核心铁律)
+        try:
+            if getattr(self, 'profile_name', '') == '短线狙击手' and self.positions:
+                from strategies.prev_close_play import check_prev_close_exit
+                for pc, pos in list(self.positions.items()):
+                    try:
+                        kdf = get_kline(pc, 30)
+                        if kdf is None or getattr(kdf, 'empty', True):
+                            continue
+                        entry_px = pos.get("avg_cost", 0)
+                        ex = check_prev_close_exit(kdf, entry_px)
+                        if ex["exit"]:
+                            # 避免与watch_positions的stop_loss重复告警
+                            dup = any(a.get("type") == "stop_loss" and a.get("code") == pc
+                                      for a in self.alerts)
+                            if not dup:
+                                self.alerts.append({
+                                    "type": "stop_loss", "code": pc,
+                                    "price": ex["price"], "stop": ex["price"],
+                                    "reason": f"昨收价破位:{ex['reason']}",
+                                })
+                                self.log.warning(f"  [PrevCloseExit] {pc}: {ex['reason']}")
+                    except Exception as e:
+                        self.log.debug(f"  [PrevCloseExit] {pc}: {e}")
+        except Exception:
+            pass
         # 突发事件检查
         idx_data = get_index_snapshot(["000001"])
         idx_chg = idx_data.get("000001", {}).get("change_pct", 0) if idx_data else 0

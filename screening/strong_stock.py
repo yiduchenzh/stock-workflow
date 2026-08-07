@@ -27,6 +27,8 @@ def screen_strong_stocks(candidates: list, northbound=None, kline_cache=None, to
     sector_heat = {s["name"]: s.get("change_pct", 0) for s in sectors}
     # 板块涨幅排名(百分位)
     sector_names = list(sector_heat.keys())
+    # v14.45: 板块数据缺失降级 — 无板块数据时不扣分(否则所有候选都被D级淘汰)
+    sector_data_missing = len(sector_heat) == 0
     
     # 2. 对每只候选计算强势分
     scored = []
@@ -36,7 +38,9 @@ def screen_strong_stocks(candidates: list, northbound=None, kline_cache=None, to
         # 板块热度 (25分): 板块涨幅排前-加分, 排后-降分
         ind = c.get("industry", "")
         heat = sector_heat.get(ind, 0)
-        if heat >= 3: score += 20
+        if sector_data_missing:
+            score += 15  # 降级: 无板块数据给中性偏上分(不淘汰)
+        elif heat >= 3: score += 20
         elif heat >= 1.5: score += 12
         elif heat >= 0: score += 5
         elif heat > -1.5: score -= 5
@@ -95,7 +99,9 @@ def screen_strong_stocks(candidates: list, northbound=None, kline_cache=None, to
     
     scored.sort(key=lambda x: x["strong_score"], reverse=True)
     logger.info(f"[Strong] {len(scored)} scored, grades: A={sum(1 for s in scored if s['strong_grade']=='A')} B={sum(1 for s in scored if s['strong_grade']=='B')} C={sum(1 for s in scored if s['strong_grade']=='C')} D={sum(1 for s in scored if s['strong_grade']=='D')}")
-    # 仅返回A/B级强势股 (strong_score>=70), 宁缺毋滥
-    quality = [s for s in scored if s["strong_score"] >= 70]
+    # 仅返回A/B级强势股 (strong_score>=70, 宁缺毋滥)
+    # v14.45: 板块数据缺失时门槛放宽到60(候选供昨收价信号二次筛选)
+    min_score = 60 if sector_data_missing else 70
+    quality = [s for s in scored if s["strong_score"] >= min_score]
     logger.info(f"[Strong] Quality filter: {len(quality)}/{len(scored)} passed (>=70)")
     return quality[:15]
