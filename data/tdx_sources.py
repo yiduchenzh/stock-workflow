@@ -17,6 +17,9 @@ logger = logging.getLogger("aurora.tdx")
 _CLIENT = None
 _CLIENT_TS = 0
 _CLIENT_TTL = 300  # 5分钟重连
+# v14.43: P1-3 WalkForward并行寻优 — mootdx TCP连接非线程安全, 全局锁串行化
+import threading as _threading
+_TDX_LOCK = _threading.RLock()
 
 
 def _get_client():
@@ -103,7 +106,14 @@ def get_tdx_kline(code: str, days: int = 500, period: str = "day") -> "pd.DataFr
     获取历史K线 — mootdx TCP直连.
     指数代码(399xxx/000300等)自动走index_bars接口.
     返回DataFrame格式({date, open, close, high, low, volume}), 兼容 sources.py.
+    v14.43: RLock包裹 — 多线程(如WF并行寻优)串行化mootdx连接, 防TCP数据串扰
     """
+    import pandas as pd
+    with _TDX_LOCK:
+        return _get_tdx_kline_locked(code, days, period)
+
+
+def _get_tdx_kline_locked(code: str, days: int, period: str) -> "pd.DataFrame":
     import pandas as pd
     client = _get_client()
     if client is None:

@@ -1072,6 +1072,86 @@ def test_single_stock(code: str = "600519") -> dict:
     return result
 
 
+# ─── v14.43 P2-2: 全科目财务快照 (对齐hikyuu stkfinance表) ──────────
+# 用mootdx get_finance_info(40+字段三表核心科目) 增强现有37字段快照
+_FIN_INFO_CACHE: Dict[str, Tuple[float, dict]] = {}
+
+def _get_finance_info_raw(code: str) -> Optional[dict]:
+    """mootdx get_finance_info — 40+字段财务报表快照(资产负债表/利润表/现金流量表核心科目)"""
+    now = time.time()
+    if code in _FIN_INFO_CACHE:
+        ts, data = _FIN_INFO_CACHE[code]
+        if now - ts < 86400 * 3:  # 3天缓存
+            return data
+    try:
+        client = _get_mootdx_client()
+        if client is None:
+            return None
+        df = client.client.get_finance_info(market=1 if code.startswith(("6", "9")) else 0,
+                                            code=code)
+        result = dict(df) if df else None
+        if result:
+            _FIN_INFO_CACHE[code] = (now, result)
+        return result
+    except Exception as e:
+        logger.debug(f"[FinanceInfo] {code}: {e}")
+        return None
+
+
+def get_financial_snapshot(code: str) -> dict:
+    """全科目财务快照 — 返回三大报表核心科目+衍生比率(对齐hikyuu stkfinance 34字段)
+    包含: 资产/负债/权益/收入/利润/现金流/股本结构 + ROE/负债率/毛利率等衍生指标
+    """
+    raw = _get_finance_info_raw(code)
+    if not raw:
+        return {}
+    try:
+        def _g(k):
+            return raw.get(k)
+        snapshot = {
+            # 股本结构
+            "zongguben": _g("zongguben"), "liutongguben": _g("liutongguben"),
+            "guojiagu": _g("guojiagu"), "farengu": _g("farengu"),
+            "ipo_date": _g("ipo_date"), "industry": _g("industry"),
+            # 资产负债表
+            "zongzichan": _g("zongzichan"), "liudongzichan": _g("liudongzichan"),
+            "gudingzichan": _g("gudingzichan"), "wuxingzichan": _g("wuxingzichan"),
+            "liudongfuzhai": _g("liudongfuzhai"), "changqifuzhai": _g("changqifuzhai"),
+            "jingzichan": _g("jingzichan"), "zibengongjijin": _g("zibengongjijin"),
+            "cunhuo": _g("cunhuo"), "yingshouzhangkuan": _g("yingshouzhangkuan"),
+            # 利润表
+            "zhuyingshouru": _g("zhuyingshouru"), "zhuyinglirun": _g("zhuyinglirun"),
+            "yingyelirun": _g("yingyelirun"), "lirunzonghe": _g("lirunzonghe"),
+            "jinglirun": _g("jinglirun"), "weifenpeilirun": _g("weifenpeilirun"),
+            "touzishouyu": _g("touzishouyu"),
+            # 现金流量表
+            "jingyingxianjinliu": _g("jingyingxianjinliu"), "zongxianjinliu": _g("zongxianjinliu"),
+            # 每股数据
+            "meigujingzichan": _g("meigujingzichan"), "gudongrenshu": _g("gudongrenshu"),
+        }
+        # 衍生比率 (对齐hikyuu财务因子)
+        zzc = snapshot.get("zongzichan") or 0
+        jzc = snapshot.get("jingzichan") or 0
+        ldfz = snapshot.get("liudongfuzhai") or 0
+        cqfz = snapshot.get("changqifuzhai") or 0
+        zysr = snapshot.get("zhuyingshouru") or 0
+        jlr = snapshot.get("jinglirun") or 0
+        jyxj = snapshot.get("jingyingxianjinliu") or 0
+        snapshot["debt_ratio"] = round((ldfz + cqfz) / zzc * 100, 2) if zzc else None  # 资产负债率%
+        snapshot["roe"] = round(jlr / jzc * 100, 2) if jzc else None  # ROE%
+        # 注: 通达信finance无单独"营业成本"字段, zhuyinglirun为主营业务利润口径
+        snapshot["main_op_margin"] = round(snapshot.get("zhuyinglirun") / zysr * 100, 2) if zysr else None  # 主营利润率%
+        snapshot["net_margin"] = round(jlr / zysr * 100, 2) if zysr else None  # 净利率%
+        snapshot["ocf_to_ni"] = round(jyxj / jlr, 2) if jlr else None  # 经营现金流/净利润
+        snapshot["total_asset_turnover"] = round(zysr / zzc, 4) if zzc else None  # 总资产周转率
+        snapshot["current_ratio"] = round((snapshot.get("liudongzichan") or 0) / ldfz, 2) if ldfz else None  # 流动比率
+        snapshot["_source"] = "mootdx_finance_info"
+        return snapshot
+    except Exception as e:
+        logger.debug(f"[FinanceSnapshot] {code}: {e}")
+        return {}
+
+
 # ─── CLI entry point ────────────────────────────────────────────
 
 if __name__ == "__main__":

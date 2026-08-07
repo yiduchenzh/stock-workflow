@@ -982,3 +982,162 @@ def get_eps_forecast(code: str) -> dict:
     except Exception as e:
         logger.warning(f"[EPS Forecast] {code}: {e}")
         return {"eps_cur": 0, "eps_next": 0, "eps_next2": 0, "analyst_count": 0}
+
+
+# ─────────────────────────────────────────────
+# v14.43: 除权除息数据 (对齐hikyuu StockWeight权息表)
+# 数据源: mootdx get_xdxr_info — fenhong(每股分红)/peigujia(配股价)/
+#         songzhuangu(送转股比例)/peigu(配股比例)/suogu(缩股)
+# ─────────────────────────────────────────────
+_XDXR_CACHE: dict = {"data": {}, "time": {}}
+
+def get_xdxr_info(code: str, use_cache: bool = True) -> list:
+    """获取个股除权除息历史 — 返回[{date:'YYYY-MM-DD', fenhong, peigujia,
+    songzhuangu, peigu, suogu, category, name}] 按日期升序
+    v14.43: 供SimAccount除权日分红送股持仓调整使用
+    """
+    now = time.time()
+    if use_cache and code in _XDXR_CACHE["data"]:
+        if now - _XDXR_CACHE["time"].get(code, 0) < 86400 * 7:  # 7天缓存
+            return _XDXR_CACHE["data"][code]
+    try:
+        from mootdx.quotes import Quotes
+        q = Quotes.factory(market="std")
+        df = q.xdxr(symbol=code)
+        records = []
+        if df is not None and not df.empty:
+            for _, r in df.iterrows():
+                # 仅保留"除权除息"事件(category=1), 其他(送配股上市等)忽略
+                cat = r.get("category")
+                if str(cat) not in ("1", "1.0", "1.00"):
+                    continue
+                d = {
+                    "date": "%04d-%02d-%02d" % (int(r.get("year", 0)), int(r.get("month", 0)), int(r.get("day", 0))),
+                    "fenhong": float(r.get("fenhong") or 0),       # 每10股现金分红(元) — mootdx为每10股口径
+                    "peigujia": float(r.get("peigujia") or 0),     # 配股价(元)
+                    "songzhuangu": float(r.get("songzhuangu") or 0),  # 每10股送转股数
+                    "peigu": float(r.get("peigu") or 0),           # 每10股配股数
+                    "suogu": float(r.get("suogu") or 0),           # 缩股比例
+                    "name": str(r.get("name", "")),
+                }
+                if d["date"][:4] != "0000":
+                    records.append(d)
+            records.sort(key=lambda x: x["date"])
+        _XDXR_CACHE["data"][code] = records
+        _XDXR_CACHE["time"][code] = now
+        return records
+    except Exception as e:
+        logger.debug(f"[XDXR] {code}: {e}")
+        return []
+
+
+# ─────────────────────────────────────────────
+# v14.43 P2-1: 复权自算 (对齐hikyuu KDataPrivatedBufferImp::_recoverForward)
+# 数据基础: 腾讯原始K线(不复权day键) + xdxr权息表 → 自算前/后复权
+# 前复权公式: 复权后价格=[(复权前价格-现金红利)+配股价×流通股份变动比例]÷(1+变动比例)
+# ─────────────────────────────────────────────
+def _adjust_factor_series(code: str, xdxr_list: list = None) -> list:
+    """从权息表计算逐日累计复权因子
+    返回: [{date, factor, bonus_per_share}] factor=该日之前的复权乘数(分段)
+    对齐hikyuu: 每个除权日, 该日之前的全部价格乘以 volume_k=1/denominator
+    """
+    if xdxr_list is None:
+        xdxr_list = get_xdxr_info(code)
+    factors = []
+    for x in xdxr_list:
+        # denominator = (1+流通股份变动比例), temp = 配股价×变动 - 红利
+        # 对齐hikyuu: change=0.1*(送转+配股+增发)/10... 简化用xdxr口径:
+        # songzhuangu/peigu为每10股数, 变动比例=(songzhuangu+peigu)/10
+        change = (x.get("songzhuangu", 0) + x.get("peigu", 0)) / 10.0
+        denominator = 1.0 + change
+        temp = x.get("peigujia", 0) * change - x.get("fenhong", 0) / 10.0
+        if abs(denominator - 1.0) < 1e-9 and abs(temp) < 1e-9:
+            continue
+        factors.append({
+            "date": x["date"],
+            "denominator": denominator,
+            "temp": temp,
+            "change": change,
+        })
+    return factors
+
+
+def apply_adjust_factor(df: pd.DataFrame, code: str, direction: str = "forward") -> pd.DataFrame:
+    """对原始K线DataFrame应用复权因子(自算, 对齐hikyuu)
+    direction: forward=前复权(以最新为基准, 历史价下调) / backward=后复权(历史价不动, 后续价上调)
+    返回: 复权后的df副本(不改原数据), 列含adjust_factor
+    """
+    if df is None or df.empty:
+        return df
+    df = df.copy()
+    if "date" not in df.columns:
+        return df
+    factors = _adjust_factor_series(code)
+    if not factors:
+        df["adjust_factor"] = 1.0
+        return df
+    # 建立日期→因子映射
+    factor_map = {f["date"]: f for f in factors}
+    dates = [str(d)[:10] for d in df["date"]]
+    # 前复权: 从最近除权日向前累积; 每根K线乘其之后所有除权日的volume_k
+    # 实现: 遍历除权日(时间升序), 对每个除权日之前的K线应用该因子
+    adj = df.copy()
+    if direction == "forward":
+        for f in factors:
+            fdate = f["date"]
+            mask = [d <= fdate for d in dates]
+            if not any(mask):
+                continue
+            denom = f["denominator"]
+            temp = f["temp"]
+            for col in ("open", "high", "low", "close"):
+                adj.loc[mask, col] = (adj.loc[mask, col].astype(float) + temp) / denom
+        # 前复权: 最新价不变(基准), 无需额外缩放
+    else:  # backward 后复权: 除权日之后(含)的价格上调
+        for f in factors:
+            fdate = f["date"]
+            mask = [d >= fdate for d in dates]
+            if not any(mask):
+                continue
+            denom = f["denominator"]
+            temp = f["temp"]
+            for col in ("open", "high", "low", "close"):
+                adj.loc[mask, col] = (adj.loc[mask, col].astype(float) - temp) * denom
+    # 计算复权因子(最新收盘/原始最新收盘)
+    try:
+        adj["adjust_factor"] = adj["close"].astype(float) / df["close"].astype(float).replace(0, float("nan"))
+        adj["adjust_factor"] = adj["adjust_factor"].fillna(1.0)
+    except Exception:
+        adj["adjust_factor"] = 1.0
+    return adj
+
+
+def get_kline_self_adjusted(code: str, days: int = 500, direction: str = "forward") -> pd.DataFrame:
+    """自算复权K线: 原始K线(腾讯day键) + xdxr权息 → 前/后复权
+    v14.43 P2-1: 替代依赖腾讯qfq, 复权结果由本地权息表精确计算
+    """
+    # 原始K线: 用腾讯不复权接口
+    try:
+        import urllib.request as _ur
+        pfx = _prefix(code)
+        url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={pfx},day,,,{days},"
+        req = _ur.Request(url, headers={"User-Agent": UA})
+        r = _ur.urlopen(req, timeout=10)
+        raw = json.loads(r.read().decode("utf-8")).get("data", {}).get(pfx, {})
+        rows = raw.get("day", [])
+        if not rows:
+            logger.debug(f"[SelfAdj] {code}: 无原始K线 rows={list(raw.keys())}")
+            return pd.DataFrame()
+        # 腾讯除权日行可能含第7列(除权信息dict) — 只取前6列: date/open/close/high/low/volume
+        rows = [row[:6] for row in rows]
+        df = pd.DataFrame(rows, columns=["date", "open", "close", "high", "low", "volume"])
+        df["open"] = df["open"].astype(float)
+        df["close"] = df["close"].astype(float)
+        df["high"] = df["high"].astype(float)
+        df["low"] = df["low"].astype(float)
+        df["volume"] = df["volume"].astype(float)
+        df["amount"] = df["volume"] * (df["high"] + df["low"] + df["close"]) / 3
+        return apply_adjust_factor(df, code, direction)
+    except Exception as e:
+        logger.debug(f"[SelfAdj] {code}: {e}")
+        return pd.DataFrame()

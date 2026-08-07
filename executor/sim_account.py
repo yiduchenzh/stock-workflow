@@ -49,6 +49,11 @@ class SimAccount(BaseExecutor):
         self.trades_path = trades_path or TRADES
         self.commission = 0.0003      # 佣金0.03%
         self.stamp_tax = 0.001        # 印花税0.1% (仅卖出)
+        # v14.43: 成本模型对齐hikyuu FixedA2017TradeCost — 过户费+最低佣金+按板块差异化
+        self.transfer_fee = 0.00002    # 过户费0.002% (仅沪市/北交所, 深市不收)
+        self.min_commission = 5.0      # 最低佣金5元 (hikyuu lowest_commission)
+        # 按板块印花税: 主板/创业/科创都收0.1%; 北交所0.05%; ETF 0
+        self.stamp_by_market = {"sz": 0.001, "sh": 0.001, "bj": 0.0005}
         self.slippage_base = 0.001     # 基础滑点0.1%
         self.slippage_tiers = {      # 按市值分层 (Quant审计)
             500: 0.001,   # >500亿: 0.1%
@@ -70,6 +75,31 @@ class SimAccount(BaseExecutor):
         self._stock_micro_cache: dict[str, dict] = {}
 
         self._load()
+
+    # ── v14.43: 成本模型接口化 (对齐hikyuu TradeCostBase/CostRecord) ──
+    def _market_of(self, code: str) -> str:
+        """判断股票市场: sh沪市/sz深市/bj北交所
+        v14.43: 判定顺序注意 — 92开头(北交所920xxx)优先于9(沪B), 8/4(北交所)优先
+        """
+        if code.startswith(("92", "8", "4")): return "bj"
+        if code.startswith(("6", "9", "688")): return "sh"
+        return "sz"
+
+    def _calc_trade_cost(self, code: str, price: float, shares: int, is_buy: bool) -> dict:
+        """计算交易成本 — CostRecord五字段模型: commission/stamptax/transferfee/others/total
+        v14.43: 佣金(0.03%且最低5元) + 印花税(卖出,按板块) + 过户费(仅沪市/北交所0.002%)
+        """
+        notional = price * shares
+        commission = max(notional * self.commission, self.min_commission)
+        stamp = 0.0
+        if not is_buy:
+            stamp = notional * self.stamp_by_market.get(self._market_of(code), 0.001)
+        transfer = 0.0
+        if self._market_of(code) in ("sh", "bj"):
+            transfer = notional * self.transfer_fee
+        total = commission + stamp + transfer
+        return {"commission": commission, "stamptax": stamp, "transferfee": transfer,
+                "others": 0.0, "total": total}
 
     # ── 微结构增强核心方法 ──
 
@@ -167,7 +197,8 @@ class SimAccount(BaseExecutor):
         fill_price = ms["fill_price"]
 
         notional = fill_price * shares
-        fee = notional * self.commission
+        cost = self._calc_trade_cost(code, fill_price, shares, is_buy=True)
+        fee = cost["total"]
         total_cost = notional + fee
 
         if total_cost > self.cash:
@@ -176,7 +207,8 @@ class SimAccount(BaseExecutor):
                 return {"success": False, "error": f"资金不足(需{total_cost:.0f}>现金{self.cash:.0f})"}
             shares = max_shares
             notional = fill_price * shares
-            fee = notional * self.commission
+            cost = self._calc_trade_cost(code, fill_price, shares, is_buy=True)
+            fee = cost["total"]
             total_cost = notional + fee
 
         self.cash -= total_cost
@@ -202,6 +234,7 @@ class SimAccount(BaseExecutor):
             "time_factor": ms.get("time_factor", 1.0),
             "ac_impact_pct": round(ms.get("ac_impact", 0) * 100, 4),
             "fee": round(fee, 2), "total": round(total_cost, 2),
+            "cost_detail": {k: round(v, 4) for k, v in cost.items()},
             "order_type": ms.get("order_type_advice", {}).get("order_type", "market"),
             "reason": reason, "time": datetime.now().isoformat(),
             # ── 六问证据链: 决策上下文 (buy_what/when/how_much) ──
@@ -257,9 +290,10 @@ class SimAccount(BaseExecutor):
         fill_price = ms["fill_price"]
 
         notional = fill_price * shares
-        commission = notional * self.commission
-        stamp = notional * self.stamp_tax
-        net = notional - commission - stamp
+        cost = self._calc_trade_cost(code, fill_price, shares, is_buy=False)
+        commission = cost["commission"]
+        stamp = cost["stamptax"]
+        net = notional - cost["total"]
 
         pnl = net - shares * pos["avg_cost"]
         avg_cost = pos["avg_cost"]
@@ -294,6 +328,7 @@ class SimAccount(BaseExecutor):
             "ac_impact_pct": round(ms.get("ac_impact", 0)*100, 4),
             "commission": round(commission, 2), "stamp": round(stamp, 2),
             "net": round(net, 2), "pnl": round(pnl, 2),
+            "cost_detail": {k: round(v, 4) for k, v in cost.items()},
             "pnl_pct": pnl_pct,
             "order_type": ms.get("order_type_advice", {}).get("order_type", "market"),
             "reason": reason, "time": datetime.now().isoformat(),
@@ -320,6 +355,86 @@ class SimAccount(BaseExecutor):
             "positions": len(self.positions),
             "trades_today": sum(1 for t in self.trades if str(datetime.now().date()) in t.get("time", "")),
         }
+
+    # ── v14.43: 除权除息处理 (对齐hikyuu TradeManager::updateWithWeight) ──
+    # 持仓股票在除权日: 现金分红入账 + 送转股自动增加持仓 + 配股/缩股调整
+    def apply_corporate_actions(self, force_date: str = None) -> list:
+        """检查持仓股票的除权除息事件并调整持仓/现金
+        分红: 每股fenhong → 现金入账, 记corporate_action
+        送转: 每10股songzhuangu → 持仓股数增加
+        配股: 每10股peigu → 按配股价配股(自动参与)
+        缩股: suogu比例 → 持仓股数缩减
+        返回: 处理的事件列表 (空=无事件)
+        """
+        from data.sources import get_xdxr_info
+        events = []
+        today = force_date or str(datetime.now().date())
+        for code, pos in list(self.positions.items()):
+            try:
+                xdxr_list = get_xdxr_info(code)
+                for x in xdxr_list:
+                    ev_date = x["date"]
+                    # 只处理"入场日期之后 且 未处理过"的事件 — 入场前的历史除权不处理
+                    entry_date = str(pos.get("entry_date", ""))[:10]
+                    last_check = str(pos.get("last_ca_check", entry_date))[:10]
+                    if ev_date <= last_check or ev_date > today:
+                        continue
+                    shares = pos["shares"]
+                    changed = False
+                    # 1) 现金分红 (fenhong为每10股派息额 → 每股=fenhong/10)
+                    bonus = x.get("fenhong", 0)
+                    if bonus > 0:
+                        cash_gain = round(bonus / 10.0 * shares, 2)
+                        self.cash += cash_gain
+                        events.append({"code": code, "type": "bonus", "date": ev_date,
+                                       "cash": cash_gain, "desc": f"每10股分红{bonus}元"})
+                        changed = True
+                    # 2) 送转股 (每10股送转x股)
+                    sg = x.get("songzhuangu", 0)
+                    if sg > 0:
+                        add = int(shares / 10 * sg)
+                        if add > 0:
+                            pos["shares"] += add
+                            events.append({"code": code, "type": "gift", "date": ev_date,
+                                           "shares": add, "desc": f"每10股送转{sg}股"})
+                            changed = True
+                    # 3) 配股 (每10股配x股, 按配股价自动参与)
+                    pg = x.get("peigu", 0)
+                    if pg > 0 and x.get("peigujia", 0) > 0:
+                        add = int(shares / 10 * pg)
+                        if add > 0:
+                            cost_pg = round(x["peigujia"] * add, 2)
+                            if self.cash >= cost_pg:
+                                self.cash -= cost_pg
+                                old_total = pos["shares"] * pos.get("avg_cost", 0)
+                                pos["shares"] += add
+                                # 配股成本并入持仓成本
+                                pos["avg_cost"] = round((old_total + cost_pg) / pos["shares"], 4)
+                                events.append({"code": code, "type": "rights", "date": ev_date,
+                                               "shares": add, "cost": cost_pg,
+                                               "desc": f"每10股配{pg}股@配股价{x['peigujia']}"})
+                                changed = True
+                    # 4) 缩股 (suogu比例)
+                    sg2 = x.get("suogu", 0)
+                    if sg2 > 0 and sg2 != 1:
+                        new_shares = int(shares * sg2)
+                        if new_shares > 0 and new_shares != shares:
+                            pos["shares"] = new_shares
+                            events.append({"code": code, "type": "suogu", "date": ev_date,
+                                           "shares": new_shares, "desc": f"缩股{sg2}"})
+                            changed = True
+                    if changed:
+                        pos["last_ca_check"] = ev_date
+                        self.trades.append({"action": "corporate_action", "code": code,
+                                            "date": ev_date, "events": [e for e in events
+                                                                        if e["code"] == code],
+                                            "time": datetime.now().isoformat()})
+                        logger.info(f"[CorpAct] {code} {ev_date}: 分红/送转/配股处理")
+            except Exception as e:
+                logger.debug(f"[CorpAct] {code}: {e}")
+        if events:
+            self._save()
+        return events
 
     def _save(self):
         p = self.state_path or STATE

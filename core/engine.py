@@ -1169,6 +1169,15 @@ class AuroraEngine:
 
     # ──────── step 9: position monitoring ────────
     def step_monitor(self):
+        # v14.43: 除权除息检查 — 持仓分红/送转/配股在除权日自动调整
+        try:
+            if self.positions:
+                events = self.account.apply_corporate_actions()
+                if events:
+                    for ev in events:
+                        self.log.info(f"  [CorpAct] {ev['code']} {ev['date']}: {ev['desc']}")
+        except Exception as e:
+            self.log.debug(f"  [CorpAct] check fail: {e}")
         alerts = watch_positions(self.positions, self.cfg)
         self.alerts.extend(alerts)
         # 突发事件检查

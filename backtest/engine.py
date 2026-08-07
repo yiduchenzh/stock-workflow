@@ -61,53 +61,68 @@ class BacktestEngine:
 
         from data.sources import get_kline
         all_results = {}
-        for code in codes[:5]:
-            total_needed = train_days + test_days * windows + oos_days + 50
-            kline = get_kline(code, total_needed)
-            if kline.empty or len(kline) < train_days:
-                all_results[code] = {"kelly": 0.08, "win_rate": 0.0, "best_strategy": None, "rr": 2.0}
-                continue
 
-            # 保留OOS段: 最后oos_days作为样本外验证
-            oos_start = len(kline) - oos_days
-            oos_df = kline.iloc[oos_start:] if oos_days > 0 else None
-            train_data = kline.iloc[:oos_start] if oos_days > 0 else kline
+        # v14.43: P1-3 WalkForward并行寻优 — 对齐hikyuu OptimalSelector._calculate_parallel
+        # 候选股票池并行评估(每股票独立训练/测试窗口), 替代原串行for
+        import concurrent.futures as _cf
 
-            # Walk-Forward在训练数据上滚动
-            results = []
-            for w in range(windows):
-                start = w * test_days
-                train_end = start + train_days
-                test_end = min(train_end + test_days, len(train_data))
-                test_df = train_data.iloc[train_end:test_end]
-                if len(test_df) < 10: continue
-                from strategies.runner import analyze_all
-                dummy = [{"code": code, "name": code, "price": float(test_df["close"].iloc[-1])}]
-                analysis = analyze_all(dummy, kline_override={code: test_df})
-                results.extend(analysis)
+        def _wf_one(code: str) -> tuple:
+            """单股票Walk-Forward评估(线程安全: 各自独立K线/缓存)"""
+            try:
+                total_needed = train_days + test_days * windows + oos_days + 50
+                kline = get_kline(code, total_needed)
+                if kline.empty or len(kline) < train_days:
+                    return code, {"kelly": 0.08, "win_rate": 0.0, "best_strategy": None, "rr": 2.0}
 
-            best_params = self._compute_best_params(code, results)
-            best_params["oos_days"] = oos_days
+                # 保留OOS段: 最后oos_days作为样本外验证
+                oos_start = len(kline) - oos_days
+                oos_df = kline.iloc[oos_start:] if oos_days > 0 else None
+                train_data = kline.iloc[:oos_start] if oos_days > 0 else kline
 
-            # OOS验证: 在样本外数据上运行
-            if oos_df is not None and len(oos_df) >= 10:
-                from strategies.runner import analyze_all
-                oos_dummy = [{"code": code, "name": code, "price": float(oos_df["close"].iloc[-1])}]
-                try:
-                    oos_result = analyze_all(oos_dummy, kline_override={code: oos_df})
-                    if oos_result and oos_result[0].get("signal"):
-                        best_params["oos_signal"] = True
-                        best_params["oos_score"] = oos_result[0].get("best_score", 0)
-                        logger.info(f"[WF OOS] {code}: signal={True} score={oos_result[0].get('best_score', 0)}")
-                    else:
-                        best_params["oos_signal"] = False
-                        best_params["oos_score"] = 0
-                except Exception as e:
-                    logger.warning(f"[WF OOS] {code} fail: {e}")
-                    best_params["oos_error"] = str(e)
+                # Walk-Forward在训练数据上滚动
+                results = []
+                for w in range(windows):
+                    start = w * test_days
+                    train_end = start + train_days
+                    test_end = min(train_end + test_days, len(train_data))
+                    test_df = train_data.iloc[train_end:test_end]
+                    if len(test_df) < 10: continue
+                    from strategies.runner import analyze_all
+                    dummy = [{"code": code, "name": code, "price": float(test_df["close"].iloc[-1])}]
+                    analysis = analyze_all(dummy, kline_override={code: test_df})
+                    results.extend(analysis)
 
-            self._wf_results[code] = best_params
-            all_results[code] = best_params
+                best_params = self._compute_best_params(code, results)
+                best_params["oos_days"] = oos_days
+
+                # OOS验证: 在样本外数据上运行
+                if oos_df is not None and len(oos_df) >= 10:
+                    from strategies.runner import analyze_all
+                    oos_dummy = [{"code": code, "name": code, "price": float(oos_df["close"].iloc[-1])}]
+                    try:
+                        oos_result = analyze_all(oos_dummy, kline_override={code: oos_df})
+                        if oos_result and oos_result[0].get("signal"):
+                            best_params["oos_signal"] = True
+                            best_params["oos_score"] = oos_result[0].get("best_score", 0)
+                            logger.info(f"[WF OOS] {code}: signal={True} score={oos_result[0].get('best_score', 0)}")
+                        else:
+                            best_params["oos_signal"] = False
+                            best_params["oos_score"] = 0
+                    except Exception as e:
+                        logger.warning(f"[WF OOS] {code} fail: {e}")
+                        best_params["oos_error"] = str(e)
+                return code, best_params
+            except Exception as e:
+                logger.warning(f"[WF] {code} fail: {e}")
+                return code, {"kelly": 0.08, "win_rate": 0.0, "best_strategy": None, "rr": 2.0}
+
+        target_codes = codes[:5]
+        with _cf.ThreadPoolExecutor(max_workers=min(4, len(target_codes))) as pool:
+            for code, best_params in pool.map(_wf_one, target_codes):
+                self._wf_results[code] = best_params
+                all_results[code] = best_params
+        logger.info(f"[WF] 并行完成 {len(all_results)}/{len(target_codes)} 只股票 "
+                    f"(workers=4, 对齐hikyuu OptimalSelector并行寻优)")
 
         self._wf_results[ck] = {"cached": True, "codes": codes, "train_days": train_days}
         self._save_cache()
