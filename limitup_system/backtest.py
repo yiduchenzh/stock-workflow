@@ -196,6 +196,8 @@ def backtest_full_tactics(rows: List[Dict[str, Any]], code: str) -> Dict[str, An
     """
     rows = attach_prev_close(rows)
     pos = 0.0
+    locked_today = 0.0        # ⭐ P1-1(2026-09-13): 今日买入份数（A股 T+1 当日不可卖）
+    clear_pending = 0.0       # 已判清仓但被 T+1 锁定、待次日开盘执行的份数
     n_t0 = 0
     n_add = 0
     n_reduce = 0
@@ -209,6 +211,13 @@ def backtest_full_tactics(rows: List[Dict[str, Any]], code: str) -> Dict[str, An
         pc = r["prev_close"]
         if pc <= 0:
             continue
+        # ── T+1 解锁：昨日买入今日可卖；昨日挂起的清仓在今日开盘执行 ──
+        locked_today = 0.0
+        if clear_pending > 0:
+            pos = max(0.0, pos - clear_pending)
+            signals.append({"day": r["day"], "action": "清仓(T+1次日)", "price": round(r["open"], 2),
+                            "type": "sell", "note": "T+1：前一日判清仓但当日锁定，次日开盘卖出"})
+            clear_pending = 0.0
         y = rows[i - 1]
         y_state = classify_daily_state(y)
         chg = (r["close"] - pc) / pc * 100.0
@@ -217,6 +226,7 @@ def backtest_full_tactics(rows: List[Dict[str, Any]], code: str) -> Dict[str, An
         # 建仓：昨日强势态 且 空仓
         if y_state == "强势" and pos <= 0:
             pos = 1.0
+            locked_today += 1.0        # T+1: 当日买入锁定
             n_trades += 1
             signals.append({"day": r["day"], "action": "建仓", "price": round(r["open"], 2), "type": "buy"})
 
@@ -254,9 +264,14 @@ def backtest_full_tactics(rows: List[Dict[str, Any]], code: str) -> Dict[str, An
                 n_reduce += 1
                 signals.append({"day": r["day"], "action": "减仓", "price": round(r["high"] * 0.995, 2), "type": "reduce"})
             # ---- 清仓：跌破昨收（日K近似15分钟不收回）----
-            if r["close"] < pc:
-                pos = 0.0
-                signals.append({"day": r["day"], "action": "清仓", "price": round(r["close"], 2), "type": "sell"})
+                if r["close"] < pc:
+                    # ⭐ P1-1(2026-09-13): A股 T+1——只卖可卖份数，当日新买的份数次日开盘执行（原实现直接 pos=0 当日清仓）
+                    _sellable = max(0.0, pos - locked_today)
+                    if _sellable > 0:
+                        signals.append({"day": r["day"], "action": "清仓", "price": round(r["close"], 2), "type": "sell"})
+                    if locked_today > 0:
+                        clear_pending = locked_today
+                    pos = pos - _sellable
 
         daily_ret.append(day_ret)
 
@@ -635,7 +650,7 @@ def backtest_full_realtime(rows: List[Dict[str, Any]], min5_by_day: Dict[str, Li
 
 
 def backtest_full_minute(rows: List[Dict[str, Any]], min15_by_day: Dict[str, List[Dict[str, Any]]],
-                          code: str) -> Dict[str, Any]:
+                          code: str, clear_below_bars: int = 1) -> Dict[str, Any]:
     """分钟级严格回测（老陈 2026-08-07: 用15分钟K严格判断，回测才真实）。
 
     与 backtest_full_tactics 相同的仓位/收益模型，但信号判定全部用当日15分钟K：
@@ -649,6 +664,10 @@ def backtest_full_minute(rows: List[Dict[str, Any]], min15_by_day: Dict[str, Lis
     收益: 底仓=当日收盘涨跌×份数；做T=真实分钟成交差价×0.3份；复合、含费近似。
     """
     rows = attach_prev_close(rows)
+    # ⭐ P1-2a(2026-09-13): 离场容忍根数——原实现"任一根15分K收盘<昨收 → 清仓"过于敏感
+    #   (300319 实测: 46 天覆盖内 106 笔, 大量"今天买、次日清")。连续 N 根收<昨收才算有效跌破。
+    #   默认 1 = 保持原行为（须 A/B 验证后才考虑改默认；由调用方传参，保持函数向后兼容）。
+    CLEAR_BARS_MIN = max(1, int(clear_below_bars or 1))
     pos = 0.0                 # 总持仓（份数）
     locked_today = 0.0        # 今日买入份数（A股 T+1：当日不可卖）
     clear_pending = 0.0       # 已判清仓但受 T+1 锁定，待次日开盘执行的份数
@@ -704,7 +723,16 @@ def backtest_full_minute(rows: List[Dict[str, Any]], min15_by_day: Dict[str, Lis
                 max_high = max(k["high"] for k in m15)
                 amp = (max_high - min_low) / pc * 100.0
                 # 清仓：15分钟有效跌破（当日任一根15分K收盘<昨收）
-                broke = next((k for k in m15 if k["close"] < pc), None)
+                # P1-2a: 连续 CLEAR_BARS_MIN 根收<昨收才算有效跌破（默认1=原行为）
+                broke, _bs = None, 0
+                for _k in m15:
+                    if _k["close"] < pc:
+                        _bs += 1
+                        if _bs >= CLEAR_BARS_MIN:
+                            broke = _k
+                            break
+                    else:
+                        _bs = 0
                 if broke:
                     sellable = max(0.0, pos - locked_today)      # T+1：只可卖昨日及更早份数
                     if sellable > 0:
@@ -926,6 +954,9 @@ def backtest_full_pro(rows: List[Dict[str, Any]], min5_by_day: Dict[str, List[Di
     RE_ENTRY = bool(params.get("re_entry", True))            # 重进开关
     RE_ENTRY_HOLD = int(params.get("re_entry_hold", 5))      # 重进需连续N根5分K站稳昨收(25分钟)
     RE_ENTRY_CD = int(params.get("re_entry_cd", 3))          # 清仓后冷却N个交易日才可重进
+    # ⭐ P0-2(2026-09-13 明细审计): 下跌趋势禁重进（300319 近2年 07-14~07-31 出现 7 次"清仓→重进→清仓"被夹）。
+    #   历史 A/B(002594) 显示 down 禁重进把 +14%→-35% → **默认 False 保持原行为**，参数开关 + 逐票 A/B 决定。
+    RE_ENTRY_REQ_TREND = bool(params.get("re_entry_require_trend", False))
     # ⭐ 2026-08-09 优化（老陈流水审计 P0/P1/P2）:
     # P0-1 T0加仓联动: 当日已T0高抛 → 尾盘加仓价须低于高抛价（否则=卖低买高白做T）
     # 默认 False（保守不改旧行为），BEST_PARAMS 显式启用
@@ -937,6 +968,10 @@ def backtest_full_pro(rows: List[Dict[str, Any]], min5_by_day: Dict[str, List[Di
     # P2 单笔止损: 持仓浮亏达 STOP_SINGLE_PCT% → 尾盘清仓（技能库教训: 单只≥8-10%, 勿用3%/5%）; 0=关
     # ⭐ P0-3 修复(2026-08-21 审计): 默认 9.0 对齐实盘 STOP_SINGLE_PCT(原默认0=缺参调用无止损)
     STOP_SINGLE_PCT = float(params.get("stop_single_pct", 9.0))
+    # ⭐ P0-1(2026-09-13 明细审计): 盘中止损"即时触发"——原口径要求【连续3根收<昨收 且 浮亏≥5%】,
+    #   急跌/跳空日明显穿透(实测 300319 08-03 记 -9.38%, 触发口径本应 -5%)。
+    #   开启后：任一5分K收盘对成本浮亏 ≤ -STOP_SINGLE_PCT 立即止损(不等3根)。默认 False=原行为。
+    STOP_IMMEDIATE = bool(params.get("stop_immediate", False))
     # ⭐ 2026-08-12 A股规则核对: 涨停买不进——当日开盘即一字/近涨停(start≥limit)实盘买不进,
     #   回测若不跳过会高估收益(已知诚实声明偏差). 可选用 SKIP_LIMIT_OPEN=1 提升真实性; 默认0=保持历史基准可比
     SKIP_LIMIT_OPEN = bool(params.get("skip_limit_open", False))
@@ -1272,9 +1307,15 @@ def backtest_full_pro(rows: List[Dict[str, Any]], min5_by_day: Dict[str, List[Di
                         below_streak += 1
                         # ⭐ P0-5 修复(2026-08-21 审计): 盘中止损(与实盘 _tick_stock 同口径)——
                         #   浮亏≥5% 且 连续3根收<昨收 → 立即止损, 不等 MA10 确认/尾盘9%
-                        if below_streak >= 3 and position > 0:
+                        if position > 0:
                             _ac_i = cost_total / position if position > 0 else 0.0
-                            if _ac_i > 0 and (k["close"] - _ac_i) / _ac_i * 100.0 <= -5.0:
+                            # P0-1: 即时止损(可选)——单根浮亏触线即走, 不等3根
+                            # 阈值与原口径一致(-5%), 区别只是不等 3 根 → 可公平 A/B
+                            if STOP_IMMEDIATE and _ac_i > 0 and (k["close"] - _ac_i) / _ac_i * 100.0 <= -5.0:
+                                intraday_stop = True
+                                broke = k
+                                break
+                            if below_streak >= 3 and _ac_i > 0 and (k["close"] - _ac_i) / _ac_i * 100.0 <= -5.0:
                                 intraday_stop = True
                                 broke = k
                                 break
@@ -1611,8 +1652,10 @@ def backtest_full_pro(rows: List[Dict[str, Any]], min5_by_day: Dict[str, List[Di
                 # 修复001267: 清仓后空仓错过反弹（弱转强需要先跌破，重进不需要）
                 re_entered = False
                 # ⭐ 缺陷修复3: 重进冷却(连亏熔断) + 前笔盈利门（防清仓亏损后接刀）
+                _re_tstate = trend_states.get(r["day"], "range") if TREND_LAYERS else "range"
                 if RE_ENTRY and pos_ok and (i - last_clear_idx > RE_ENTRY_CD) \
                         and i >= cd_until \
+                        and (not RE_ENTRY_REQ_TREND or _re_tstate != "down") \
                         and (not WEEKLY_GATE or not weekly_down) \
                         and (not GUARD_REENTRY_PROFIT or last_clear_pnl > 0):
                     entry_streak = 0
