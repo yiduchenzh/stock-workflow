@@ -7,7 +7,7 @@ from pathlib import Path
 PROJ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJ))
 
-from fastapi import FastAPI, Request, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Query, WebSocket, WebSocketDisconnect, Depends
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -17,6 +17,7 @@ from backend.routes_market import router as market_router
 from backend.routes_ai import router as ai_router
 from backend.routes_agents import router as agents_router
 from backend.routes_research import router as research_router
+from backend.routes_backtest import router as backtest_router
 from backend.commentary_engine import (
     generate_signal_commentary, generate_market_commentary,
     generate_trade_commentary, generate_regime_change_commentary,
@@ -24,6 +25,7 @@ from backend.commentary_engine import (
 )
 from backend.engine_live import EngineLiveWrapper, run_batch_and_export
 from backend.ai_coach import classify, answer, get_ctx
+from backend.deps import require_user, require_admin, require_optional_user, is_admin_email as _is_admin
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s %(message)s")
 logger = logging.getLogger("aurora.api")
@@ -33,6 +35,7 @@ app.include_router(market_router)
 app.include_router(ai_router)
 app.include_router(agents_router)
 app.include_router(research_router)
+app.include_router(backtest_router)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 _live_engine = None
@@ -82,25 +85,8 @@ async def startup():
     # WZ real data poller every 30s
 
     from backend.database import init as _dbi, migrate as _dbm;_dbi();_dbm();logger.info("Aurora SaaS v2 startup complete")
-
-    from backend.database import init as _dbi, migrate as _dbm;_dbi();_dbm();logger.info("Aurora SaaS v2 startup complete")
-    import random as _r
-    async def _inj():
-        await asyncio.sleep(2)
-        stocks=[{"code":"600519","name":"Maotai","strategy":"wave_point","price":1822,"score":85,"action":"enter","extra":{"ma_period":20},"regime":"bull_weak"},{"code":"000858","name":"Wuliangye","strategy":"mean_reversion","price":145,"score":42,"action":"enter","extra":{},"regime":"range"},{"code":"300750","name":"CATL","strategy":"momentum_breakout","price":168,"score":78,"action":"enter","extra":{},"regime":"bull_strong"},{"code":"002415","name":"Hikvision","strategy":"trend","price":45,"score":63,"action":"enter","extra":{},"regime":"bull_weak"}]
-        for d in stocks:
-            try: await _on_signal(d); await asyncio.sleep(0.5)
-            except: pass
-    asyncio.create_task(_inj())
-    async def _gen():
-        while True:
-            await asyncio.sleep(45)
-            try:
-                s=_r.choice(stocks).copy()
-                s["score"]=_r.randint(30,95)
-                await _on_signal(s)
-            except: pass
-    asyncio.create_task(_gen())
+    # 安全加固 S-5: 移除历史 startup 里用写死股票 + random 评分的假信号注入 (_inj/_gen)。
+    # 实时信号流一律来自真实 engine 回调 (register_signal_callback 等), 绝不伪造/冒充实时数据。
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -129,7 +115,8 @@ async def market_overview():
         try:
             s = json.loads(wp.read_text(encoding="utf-8"))
             r.update({"last_engine_run":s.get("updated_at"),"market_score":s.get("market_score",50),"market_regime":s.get("market_regime","range"),"plans":s.get("plans",[]),"alerts":s.get("alerts",[]),"sectors":s.get("sectors",[])})
-        except: pass
+        except Exception as e:
+            logger.warning("[overview] 读取 engine_state.json 失败: %r", e)
     try:
         import urllib.request as _ur
         _resp=_ur.urlopen("http://qt.gtimg.cn/q=sh000001,sz399001,sz399006,sh000300,sh000688,usDJI,usIXIC,usINX,hsHSI,hsHSCEI",timeout=5).read().decode("gbk")
@@ -151,11 +138,13 @@ async def market_overview():
                     global_[k] = v
             r["indices"] = a_share
             r["global_indices"] = global_
-    except: pass
+    except Exception as e:
+        logger.warning("[overview] 拉取行情指数失败: %r", e)
     sp = PROJ / "data" / "sim_state.json"
     if sp.exists():
         try: r["positions"] = list(json.loads(sp.read_text(encoding="utf-8")).get("positions",{}).values())[:20]
-        except: pass
+        except Exception as e:
+            logger.warning("[overview] 读取 sim_state.json 仓位失败: %r", e)
     return r
 
 @app.get("/api/market/today-plan")
@@ -180,7 +169,8 @@ async def today_plan():
             if _nm: _idx[_nm]=_pr+" "+_cg+"%"
         if len(_idx)>=3:
             result["indices"]=_idx
-    except: pass
+    except Exception as e:
+        logger.warning("[today-plan] 拉取实时指数失败: %r", e)
     return result
 
 @app.get("/api/signals/latest")
@@ -250,11 +240,27 @@ async def user_status(uid: str = ""):
             "can_use_api":u.can_use(ws=False),"can_use_ws":u.can_use(ws=True),
             "usage":u.usage,"invite_code":u.invite_code}
 
+_ALLOWED_TIERS = {"free", "live", "vip", "annual"}
+
 @app.get("/api/user/upgrade")
-async def user_upgrade(uid: str = "", tier: str = "live", days: int = 30):
+async def user_upgrade(uid: str, tier: str = "live", days: int = 30,
+                       email: str = Depends(require_optional_user)):
+    """升级用户等级。安全加固 S-3: 需 JWT 鉴权 + tier 白名单。
+    未登录 → 401; 登录但非管理员且非本人 → 403;
+    仅放行「管理员」或「与请求者身份匹配(uid==email)」的操作。
+    """
+    if tier not in _ALLOWED_TIERS:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"status": "error", "message": f"非法 tier: {tier} (仅允许 {sorted(_ALLOWED_TIERS)})"}, status_code=400)
+    if not email:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"status": "error", "message": "需要登录授权"}, status_code=401)
+    if not _is_admin(email) and email != uid:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"status": "error", "message": "无权限: 只能升级本人或管理员操作"}, status_code=403)
     from backend.users import upgrade
     u = upgrade(uid, tier, days)
-    return {"status":"ok","uid":u.uid,"tier":u.tier,"expires":u.expires}
+    return {"status": "ok", "uid": u.uid, "tier": u.tier, "expires": u.expires}
 
 @app.get("/api/user/use")
 async def user_use(uid: str = "", ws: int = 0):
@@ -493,26 +499,55 @@ async def _sse_poll():
             if brd: await publish("live","market_breadth",brd)
             sct=_gts(5)
             if sct: await publish("live","market_sectors",{"sectors":sct})
-        except: pass
+        except Exception as e:
+            logger.warning("[sse_poll] 实时市场推送失败: %r", e)
 
+
+# 安全加固 S-2: 允许通过 API 修改的策略参数白名单 (防正则注入 + 仅已知参数)。
+_STRATEGY_PARAMS = {
+    "ma_period", "atr_period", "wave_pct", "deviation", "vol_ratio", "lookback",
+    "top_n", "min_score", "day_range", "consolidation", "ratio", "vol_shrink",
+}
+_STRATEGY_KEYS = {
+    "wave_point", "mean_reversion", "momentum_breakout", "sector_rotation",
+    "naked_k", "chan_theory", "first_board", "pullback",
+}
+
+# 供测试注入临时配置文件隔离, 避免污染真实 config.yaml
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
 
 @app.post("/api/strategies/config/{key}")
-async def save_strategy_config(key:str, req:Request):
-    import json
-    body=await req.json()
-    PROJ=Path(__file__).resolve().parent.parent
-    fp=PROJ/"config.yaml"
-    if fp.exists():
-        try:
-            content=fp.read_text(encoding="utf-8")
-            for param,val in body.items():
-                import re
-                content=re.sub(r'('+param+r':\s*)[\d.]+', r'\g<1>'+str(val), content)
-            fp.write_text(content, encoding="utf-8")
-            return {"status":"ok","key":key,"updated":list(body.keys()),"config":content[:200]}
-        except Exception as e:
-            return {"status":"error","message":str(e)}
-    return {"status":"error","message":"config.yaml not found"}
+async def save_strategy_config(key: str, param: str = Query(default=""),
+                               value: float = Query(default=0.0),
+                               email: str = Depends(require_user)):
+    """写策略参数。安全加固 S-2: 需 JWT 鉴权 + 参数白名单 (防正则注入)。
+    仅允许修改数字型已知参数; param 必须匹配 ^\\w+$ (剔除 . * [ ] 等正则元字符)。
+    """
+    import re as _re
+    if key not in _STRATEGY_KEYS:
+        return {"status": "error", "message": f"未知策略: {key}"}
+    if not param or not _re.fullmatch(r"\w+", param):
+        return {"status": "error", "message": f"非法参数名: {param!r} (仅允许 \\w 字符)"}
+    if param not in _STRATEGY_PARAMS:
+        return {"status": "error", "message": f"非白名单参数: {param}"}
+    if not isinstance(value, (int, float)) or value != value:  # NaN 拒绝
+        return {"status": "error", "message": f"非法数值: {value}"}
+    fp = CONFIG_PATH
+    if not fp.exists():
+        return {"status": "error", "message": "config.yaml not found"}
+    try:
+        content = fp.read_text(encoding="utf-8")
+        # 只替换数字型值, 保留注释与缩进; param 已 \w+ 白名单, 无正则注入风险
+        pattern = _re.compile(r"(?m)^(\s*" + _re.escape(param) + r"\s*:\s*)[\d.]+(?:\s*(?:#.*)?)?$")
+        if not pattern.search(content):
+            return {"status": "error", "message": f"配置中不存在数字型参数 {param} 或已非数字"}
+        new_content, n = pattern.subn(lambda m: m.group(1) + repr(float(value)), content)
+        if n == 0:
+            return {"status": "error", "message": f"配置中不存在数字型参数 {param}"}
+        fp.write_text(new_content, encoding="utf-8")
+        return {"status": "ok", "key": key, "param": param, "value": float(value), "updated": n}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 @app.get("/api/market/stocks")
@@ -586,20 +621,27 @@ async def order_status(oid:str):
     return {"status":"error","message":"订单不存在"}
 
 @app.post("/api/payment/simulate/{oid}")
-async def simulate_pay(oid:str):
-    fp=_order_path(oid)
+async def simulate_pay(oid: str, email: str = Depends(require_admin)):
+    # 安全加固 S-4: 仅 dev 模式开放 + 需管理员鉴权 + tier 白名单。
+    # 生产环境绝不允许伪造支付置为 paid。
+    if os.environ.get("AURORA_MODE") != "dev":
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"status": "error", "message": "仅 dev 模式可模拟支付"}, status_code=403)
+    fp = _order_path(oid)
     if not fp.exists():
-        return {"status":"error","message":"订单不存在"}
-    order=json.loads(fp.read_text(encoding="utf-8"))
-    if order["status"]=="paid":
-        return {"status":"ok","message":"已支付"}
-    order["status"]="paid"
-    order["paid_at"]=__import__("datetime").datetime.now().isoformat()
-    fp.write_text(json.dumps(order,ensure_ascii=False,indent=2),encoding="utf-8")
+        return {"status": "error", "message": "订单不存在"}
+    order = json.loads(fp.read_text(encoding="utf-8"))
+    if order.get("tier") not in _ALLOWED_TIERS:
+        return {"status": "error", "message": f"非法 tier: {order.get('tier')}"}
+    if order["status"] == "paid":
+        return {"status": "ok", "message": "已支付"}
+    order["status"] = "paid"
+    order["paid_at"] = __import__("datetime").datetime.now().isoformat()
+    fp.write_text(json.dumps(order, ensure_ascii=False, indent=2), encoding="utf-8")
     # Auto-upgrade user via DB
     from backend.database import update_tier as _ut
     _ut(order["uid"], order["tier"])
-    return {"status":"ok","message":"支付成功，会员已升级","order":order}
+    return {"status": "ok", "message": "支付成功，会员已升级", "order": order}
 
 @app.get("/api/payment/orders/{uid}")
 async def user_orders(uid:str):

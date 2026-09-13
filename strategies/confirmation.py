@@ -6,7 +6,8 @@ logger = logging.getLogger("aurora.confirm")
 
 # 短线风格确认参数: 首板/涨停/动量突破类信号, 确认防线放宽
 _SHORT_STRATEGIES = ("first_board", "naked_pinbar", "naked_engulf", "williams_r", "orb",
-                     "momentum_breakout", "sector_rotation", "naked_supply_demand")
+                     "momentum_breakout", "sector_rotation", "naked_supply_demand",
+                     "prev_close_A", "prev_close_B")
 
 def confirm_entry(analysis: dict, kline: dict = None, profile_name: str = None) -> tuple:
     """三道防线验证: K线形态 + 指标信号 + 量价关系

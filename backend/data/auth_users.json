@@ -1,0 +1,16 @@
+{
+  "test@example.com": {
+    "pwd": "$2b$12$RSUCLHuRXAGBLvML6mWIBOz5Q2gFWEMVhgPnlhuR1sfcrK41d/EKK",
+    "created": "2026-06-26T17:20:21.382937",
+    "tier": "free",
+    "used": 0,
+    "limit": 3
+  },
+  "demo@aurora.ai": {
+    "pwd": "$2b$12$p7e7wuonkgmvyprJo9HZreskEvxYioyPgGwD7Enr8GmA4eZdRlM6q",
+    "created": "2026-06-26T17:20:59.825985",
+    "tier": "free",
+    "used": 0,
+    "limit": 3
+  }
+}

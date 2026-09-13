@@ -28,10 +28,12 @@ def test_import():
             _safe_float,
         )
         print("[PASS] Module imports OK")
-        return True
+        assert callable(get_financial_indicators)
+        assert callable(enrich_stock_with_financials)
+        assert callable(enrich_batch)
     except Exception as e:
         print(f"[FAIL] Import error: {e}")
-        return False
+        raise AssertionError(f"模块导入失败: {e}") from e
 
 
 # ─── Test 2: get_financial_indicators ────────────────────────────
@@ -56,7 +58,6 @@ def test_get_financial_indicators():
             print(f"  · {key} not available (network dependent)")
 
     print(f"[PASS] get_financial_indicators returned {len(result)} fields")
-    return True
 
 
 # ─── Test 3: enrich_stock_with_financials ────────────────────────
@@ -86,7 +87,6 @@ def test_enrich_stock():
     assert "roe_10yr" not in stock or stock.get("roe_10yr") is None
 
     print("[PASS] enrich_stock_with_financials")
-    return True
 
 
 # ─── Test 4: enrich_batch ────────────────────────────────────────
@@ -107,7 +107,6 @@ def test_enrich_batch():
         print(f"  ✓ {s['code']} ({s.get('name','?')}): {len(s)} fields")
 
     print("[PASS] enrich_batch")
-    return True
 
 
 # ─── Test 5: Edge cases ──────────────────────────────────────────
@@ -145,7 +144,6 @@ def test_edge_cases():
         print(f"[NOTE] None code handled: {e}")
 
     print("[PASS] All edge cases handled correctly")
-    return True
 
 
 # ─── Test 6: Helper functions ────────────────────────────────────
@@ -173,7 +171,6 @@ def test_helpers():
     assert _code_prefix("300750") == "SZ300750"
 
     print("[PASS] All helper functions correct")
-    return True
 
 
 # ─── Test 7: test_single_stock is callable ───────────────────────
@@ -201,7 +198,6 @@ def test_test_function():
     assert isinstance(result2, dict), "Default test should return dict"
 
     print("[PASS] test_single_stock")
-    return True
 
 
 # ─── Run all tests ───────────────────────────────────────────────

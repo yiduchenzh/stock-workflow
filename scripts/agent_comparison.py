@@ -6,27 +6,30 @@ from datetime import datetime
 ROOT = Path(r"D:\Hermes Agent CN Desktop\stock-workflow")
 
 def snapshot_all():
-    """记录所有Agent当前状态到对比文件"""
+    """记录所有Agent当前状态到对比文件 (v14.50: 直接读agent_aggregate.json,
+    原实例化整个coordinator重且易失败—快照链曾停更08-14)"""
     sys.path.insert(0, str(ROOT))
-    from multi_agent.coordinator import MultiAgentCoordinator, ALL_PROFILES
-    
-    coord = MultiAgentCoordinator()
-    summaries = {name: coord.agents[name].get_summary() for name in ALL_PROFILES}
-    
+
     tracker_file = ROOT / "data" / "agent_comparison.json"
+    agg_file = ROOT / "data" / "agent_aggregate.json"
+    if not agg_file.exists():
+        return None
+    agg = json.loads(agg_file.read_text(encoding="utf-8"))
+    agents = agg.get("agents", {})
+
     history = []
     if tracker_file.exists():
-        history = json.loads(tracker_file.read_text())
-    
+        history = json.loads(tracker_file.read_text(encoding="utf-8"))
+
     entry = {
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "time": agg.get("time", datetime.now().isoformat()),
         "date": str(datetime.now().date()),
-        "agents": summaries,
-        "total_capital": sum(s["total_value"] for s in summaries.values()),
-        "total_pnl": sum(s["pnl"] for s in summaries.values()),
+        "agents": agents,
+        "total_capital": agg.get("total_capital", 0),
+        "total_pnl": sum(s.get("pnl", 0) for s in agents.values()),
     }
     history.append(entry)
-    tracker_file.write_text(json.dumps(history[-90:], indent=2, ensure_ascii=False))
+    tracker_file.write_text(json.dumps(history[-90:], indent=2, ensure_ascii=False), encoding="utf-8")
     return entry
 
 def print_report():
@@ -35,7 +38,7 @@ def print_report():
         print("尚无对比数据")
         return
     
-    history = json.loads(tracker_file.read_text())
+    history = json.loads(tracker_file.read_text(encoding="utf-8"))
     if not history:
         print("空记录")
         return

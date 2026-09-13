@@ -14,6 +14,32 @@ class TraderAgent:
         self._setup_dirs()
         self._init_account()
         self.engine = None
+        # v14.50 修复(P0-B, 2026-09-04 周复盘): 跨Agent去重注入丢失
+        #   原coordinator把 exclude/claims 直接设在 agent.engine 上, 但 run_intraday()
+        #   内部 _fresh_engine() 每次重建 AuroraEngine → 注入全部丢失 → 短线/上班族
+        #   同分钟买入同票(持仓100%重叠)。修复: 存agent实例, _fresh_engine后统一注入。
+        self._pending_exclude = set()
+        self._pending_claims = {}
+
+    def set_exclusions(self, exclude_codes=None, claims=None):
+        """设置跨Agent去重: exclude_codes=已持仓代码集合, claims=(code,strategy)->agent映射"""
+        if exclude_codes:
+            self._pending_exclude = set(exclude_codes)
+        if claims:
+            self._pending_claims = dict(claims)
+
+    def _apply_exclusions(self):
+        """_fresh_engine后注入去重(在step_screen前调用)"""
+        try:
+            if self._pending_exclude and self.engine is not None:
+                self.engine.agent_exclude_codes = set(self._pending_exclude)
+                logger.info(f"[Dedup] {self.profile_name} 注入排除{len(self._pending_exclude)}只: "
+                            f"{sorted(self._pending_exclude)[:5]}{'...' if len(self._pending_exclude) > 5 else ''}")
+            if self._pending_claims and self.engine is not None:
+                self.engine.agent_signal_claims = dict(self._pending_claims)
+                logger.info(f"[SignalDedup] {self.profile_name} 继承{len(self._pending_claims)}条信号认领")
+        except Exception as e:
+            logger.warning(f"[Dedup] {self.profile_name} 注入失败: {e}")
 
     def _setup_dirs(self):
         root = Path(__file__).resolve().parent.parent
@@ -38,6 +64,7 @@ class TraderAgent:
     def run_morning(self, run_phase="morning"):
         """晨扫全流程: 与daily_run.py --phase morning一致"""
         self._fresh_engine(run_phase)
+        self._apply_exclusions()  # v14.50: _fresh_engine后注入跨Agent去重
         self.engine.step_market()
         self.engine.step_cascade()
         self.engine.step_screen()
@@ -52,6 +79,7 @@ class TraderAgent:
     def run_intraday(self, run_phase="monitor"):
         """盘中全流程: 与daily_run.py --phase monitor一致"""
         self._fresh_engine(run_phase)
+        self._apply_exclusions()  # v14.50: _fresh_engine后注入跨Agent去重
         self.engine.step_market()
         self.engine.step_cascade()
         self.engine.step_screen()
@@ -137,7 +165,8 @@ class AgentSimAccount:
     def _load(self):
         if self.state_path.exists():
             try:
-                d = json.loads(self.state_path.read_text())
+                from executor.sim_account import _read_json_text
+                d = json.loads(_read_json_text(self.state_path))
                 self.cash = d.get("cash", self.capital)
                 self.positions = {k: dict(v) for k, v in d.get("positions", {}).items()}
                 self.today_buys = dict(d.get("today_buys", {}))
@@ -148,21 +177,24 @@ class AgentSimAccount:
                     self.today_buys = {}
             except: pass
         if self.trades_path.exists():
-            try: self.trades = json.loads(self.trades_path.read_text())
+            try:
+                from executor.sim_account import _read_json_text
+                self.trades = json.loads(_read_json_text(self.trades_path))
             except: self.trades = []
         self._update_total()
 
     def _save(self):
         self._update_total()
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        # v14.46: 显式 UTF-8 写入(原默认编码→GBK, 读UTF-8失败→trades加载空→覆盖丢历史)
         self.state_path.write_text(json.dumps({
             "capital": self.capital, "cash": round(self.cash, 2),
             "positions": {k: dict(v) for k, v in self.positions.items()},
             "today_buys": dict(self.today_buys),
             "total": round(self.total_value, 2),
             "date": str(datetime.now().date()),
-        }, indent=2, ensure_ascii=False))
-        self.trades_path.write_text(json.dumps(self.trades[-500:], indent=2, ensure_ascii=False))
+        }, indent=2, ensure_ascii=False), encoding="utf-8")
+        self.trades_path.write_text(json.dumps(self.trades[-500:], indent=2, ensure_ascii=False), encoding="utf-8")
 
     def _update_total(self):
         pv = sum(p.get("shares",0)*p.get("current_price",p.get("avg_cost",0))

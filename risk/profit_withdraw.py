@@ -32,8 +32,9 @@ def get_total_withdrawn() -> float:
     return _load().get("withdrawn_total", 0.0)
 
 def _load():
-    try: return json.loads(STATE.read_text()) if STATE.exists() else {}
+    # v14.50 P2-B: 显式utf-8
+    try: return json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {}
     except Exception: return {}
 def _save(s):
     STATE.parent.mkdir(parents=True, exist_ok=True)
-    STATE.write_text(json.dumps(s, indent=2))
+    STATE.write_text(json.dumps(s, indent=2, ensure_ascii=False), encoding="utf-8")

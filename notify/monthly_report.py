@@ -35,18 +35,32 @@ def generate_monthly_report() -> str:
     lines.append("|:---:|:------|:-----:|:-----:|:-----:|:-----:|")
     
     try:
-        agent_file = DATA_DIR / "agent_comparison.json"
+        # v14.50修复: 优先读 agent_aggregate.json(coordinator每轮写入,最新),
+        #   回退 agent_comparison.json(历史list,快照链可能陈旧—已停更08-14)
+        agent_file = DATA_DIR / "agent_aggregate.json"
+        agents = {}
+        total_capital = 0
         if agent_file.exists():
-            data = json.loads(agent_file.read_text())
-            if isinstance(data, list) and data:
-                latest = data[-1]
-                agents = latest.get("agents", {})
-                ranked = sorted(agents.items(), key=lambda x: -x[1].get("return_pct", 0))
-                for i, (name, info) in enumerate(ranked, 1):
-                    lines.append(f"| {i} | {name} | {info.get('total_value', 0):,.0f} | {info.get('pnl', 0):,.0f} | {info.get('return_pct', 0)*100:.2f}% | {info.get('positions', 0)} |")
-                total_val = latest.get("total_capital", 0)
-                total_pnl = sum(a.get("pnl", 0) for a in agents.values())
-                lines.append(f"| - | **合计** | **{total_val:,.0f}** | **{total_pnl:,.0f}** | **{total_pnl/6_000_000*100:.2f}%** | - |")
+            data = json.loads(agent_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                agents = data.get("agents", {})
+                total_capital = data.get("total_capital", 0)
+        if not agents:
+            old_file = DATA_DIR / "agent_comparison.json"
+            if old_file.exists():
+                data = json.loads(old_file.read_text(encoding="utf-8"))
+                if isinstance(data, list) and data:
+                    latest = data[-1]
+                    agents = latest.get("agents", {})
+        if agents:
+            ranked = sorted(agents.items(), key=lambda x: -x[1].get("return_pct", 0))
+            for i, (name, info) in enumerate(ranked, 1):
+                # v14.50修复: return_pct已是百分数(-4.12), 原*100变-412%
+                lines.append(f"| {i} | {name} | {info.get('total_value', 0):,.0f} | {info.get('pnl', 0):,.0f} | {info.get('return_pct', 0):+.2f}% | {info.get('positions', 0)} |")
+            total_pnl = sum(a.get("pnl", 0) for a in agents.values())
+            base_cap = total_capital or sum(a.get("total_value", 0) for a in agents.values())
+            if base_cap > 0:
+                lines.append(f"| - | **合计** | **{base_cap:,.0f}** | **{total_pnl:,.0f}** | **{total_pnl/base_cap*100:+.2f}%** | - |")
         else:
             lines.append("| - | 无数据 | - | - | - | - |")
     except Exception as e:
@@ -64,7 +78,7 @@ def generate_monthly_report() -> str:
         # 从behavior_journal读取策略胜率
         bj_file = DATA_DIR / "behavior_journal.json"
         if bj_file.exists():
-            bj = json.loads(bj_file.read_text())
+            bj = json.loads(bj_file.read_text(encoding="utf-8"))
             strategy_stats = {}
             for entry in bj:
                 strat = entry.get("strategy", "?")
@@ -88,7 +102,7 @@ def generate_monthly_report() -> str:
     try:
         pnl_file = DATA_DIR / "pnl_tracker.json"
         if pnl_file.exists():
-            pnl = json.loads(pnl_file.read_text())
+            pnl = json.loads(pnl_file.read_text(encoding="utf-8"))
             daily = pnl.get("daily", [])
             month_days = [d for d in daily if d.get("date", "").startswith(now.strftime("%Y-%m"))]
             if month_days:

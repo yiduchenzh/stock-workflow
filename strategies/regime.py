@@ -7,7 +7,7 @@ REGIME_CONFIG = {
     "bull_strong": {
         "策略": "满仓进攻",
         "交易原则": "顺势而为,持股为主,回调加仓",
-        "active_strategies": ["momentum_breakout", "sector_rotation", "wave_point", "chan_", "naked_"],
+        "active_strategies": ["momentum_breakout", "sector_rotation", "wave_point", "chan_", "naked_", "prev_close_"],
         "战法侧重": "只做最强:突破+强势龙头", 
         "params": {}, "max_positions": 5, "kelly_mult": 1.0,
         "stop_loss_pct": 0.05, "take_profit_pct": 0.12,
@@ -18,7 +18,7 @@ REGIME_CONFIG = {
     "bull_weak": {
         "策略": "谨慎做多",
         "交易原则": "选强势板块强势股,降低仓位,严格止损",
-        "active_strategies": ["momentum_breakout", "sector_rotation", "chan_", "naked_"],
+        "active_strategies": ["momentum_breakout", "sector_rotation", "chan_", "naked_", "prev_close_"],
         "战法侧重": "仅强势股突破",
         "params": {}, "max_positions": 3, "kelly_mult": 0.7,
         "stop_loss_pct": 0.04, "take_profit_pct": 0.08,
@@ -28,7 +28,7 @@ REGIME_CONFIG = {
     "range": {
         "策略": "高抛低吸",
         "交易原则": "不追涨不杀跌,支撑买压力卖,快进快出",
-        "active_strategies": ["momentum_breakout", "wave_point", "chan_", "naked_"],
+        "active_strategies": ["momentum_breakout", "wave_point", "chan_", "naked_", "prev_close_"],
         "战法侧重": "强势股回调低吸+突破追涨",
         "params": {}, "max_positions": 2, "kelly_mult": 0.5,
         "stop_loss_pct": 0.03, "take_profit_pct": 0.06,
@@ -38,7 +38,7 @@ REGIME_CONFIG = {
     "bear_weak": {
         "策略": "防守反击",
         "交易原则": "熊市轻仓,仅逆势强势股",
-        "active_strategies": ["momentum_breakout", "chan_", "naked_"],
+        "active_strategies": ["momentum_breakout", "chan_", "naked_", "prev_close_"],
         "战法侧重": "仅逆势强势股",
         "params": {}, "max_positions": 1, "kelly_mult": 0.25,
         "stop_loss_pct": 0.02, "take_profit_pct": 0.04,
@@ -48,7 +48,7 @@ REGIME_CONFIG = {
     "bear_strong": {
         "策略": "极轻仓观望",
         "交易原则": "仅最强逆势股,涨>5%+量比>3才考虑,严止损快跑",
-        "active_strategies": ["momentum_breakout", "chan_", "naked_"],
+        "active_strategies": ["momentum_breakout", "chan_", "naked_", "prev_close_"],
         "战法侧重": "仅逆势强势股",
         "params": {}, "max_positions": 1, "kelly_mult": 0.15,
         "stop_loss_pct": 0.015, "take_profit_pct": 0.03,

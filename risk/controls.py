@@ -10,12 +10,13 @@ else:
     STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "risk_state.json"
 del _risk_os, _RISK_AGENT
 
-def _load() -> dict: 
-    try: return json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+def _load() -> dict:
+    # v14.50 P2-B: 显式utf-8(原默认GBK读utf-8文件可能崩)
+    try: return json.loads(STATE_FILE.read_text(encoding="utf-8")) if STATE_FILE.exists() else {}
     except Exception: return {}
-def _save(s: dict) -> None: 
+def _save(s: dict) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(s, indent=2))
+    STATE_FILE.write_text(json.dumps(s, indent=2, ensure_ascii=False), encoding="utf-8")
 
 def check_all(plans: list, _positions=None, cfg: dict = None) -> tuple:
     state = _load()
@@ -70,13 +71,15 @@ def check_all(plans: list, _positions=None, cfg: dict = None) -> tuple:
             stop_loss_pct = abs(p.get("stop_loss", p.get("entry_price", 10) * 0.95) / p.get("entry_price", 10) - 1) if p.get("entry_price", 10) > 0 else 0.05
 
         if kline_df is not None and len(kline_df) >= 20:
-            avg_vol = np.mean(kline_df["volume"].values[-20:])
-            avg_price = np.mean(kline_df["close"].values[-20:])
-            avg_dollar_vol = avg_vol * avg_price
-            if avg_dollar_vol < 5_000_000:
+            # v14.49: 与 check_liquidity 统一口径(手→股 换算), 阈值 2000万/日
+            _m = liquidity_metrics(p.get("code", ""), kline_df=kline_df)
+            avg_dollar_vol = _m["avg_turnover"] or 0.0
+            if avg_dollar_vol < MIN_DAILY_TURNOVER_YUAN:
                 alerts.append({"type": "liquidity", "code": p.get("code"),
-                              "msg": f"流动性不足: 日均成交额{avg_dollar_vol/1e4:.0f}万<500万"})
+                              "msg": f"流动性不足: 日均成交额{avg_dollar_vol/1e4:.0f}万"
+                                     f"<{MIN_DAILY_TURNOVER_YUAN/1e4:.0f}万"})
                 continue
+
         risk_amount = p.get("entry_price", 0) * p.get("shares", 0) * min(stop_loss_pct, 1.0)
         from risk.garch_var import predict_var
         kline_df = p.get("kline_df")
@@ -149,20 +152,54 @@ def record_trade(pnl_pct: float):
 def reset():
     _save({"breaker": False, "consec": 0, "daily_pnl": 0.0, "peak_value": 0.0, "prev_day_value": 0.0})
 
-def check_liquidity(code: str, price: float, min_vol: int = 2000000) -> bool:
-    """liquidity filter: skip stocks with avg daily volume < 5M"""
-    if not code: return False
-    try:
+# ── 流动性门槛 (v14.49 修正 2026-09-11) ────────────────────────────────
+# 原实现: avg_dollar = mean(close × volume), 但 get_kline 日K 的 volume 单位是【手】
+#   → 量值 = 真实成交额 ÷ 100, 而阈值写 2_000_000 → 实际要求"日均成交额 ≥ 2亿元",
+#     比函数 docstring 声明的"5M股"严约 100 倍。
+# 实证(2026-09-11 周复盘): 本周 [Liq] 触发 16 次砍掉 21/59 个开仓计划(36%),
+#   例 003013 地铁设计(当日成交 3.47亿 / 20日均 1.92亿, kelly=0.25 wr=100% 的最佳候选)被判低流动;
+#   002531 天顺风能(20日均 2.58亿) 通过。
+# 修正: 显式 SHARES_PER_LOT 换算成【股】再乘价格 = 日均成交额(元); 阈值取 2000万/日
+#   (≈ 2万手@10元, 与 docstring "5M股" 同量级: 500万股 × 4元 ≈ 2000万)。
+SHARES_PER_LOT = 100          # A股 1手 = 100股 (日K volume 单位=手)
+MIN_DAILY_TURNOVER_YUAN = 20_000_000   # 日均成交额下限 2000万元
+MIN_DAILY_VOL_SHARES = 5_000_000       # 日均成交量下限 500万股 (docstring 原始意图)
+
+
+def liquidity_metrics(code: str, days: int = 20, kline_df=None) -> dict:
+    """返回 {avg_turnover(元), avg_vol_shares(股), bars} — 供过滤与日志共用(单一口径)"""
+    import numpy as np
+    if kline_df is None:
         from data.sources import get_kline
-        import numpy as np
-        df = get_kline(code, 20)
-        if df is None or df.empty: return False
-        close = df["close"].values.astype(float)
-        vol = df["volume"].values.astype(float)
-        avg_dollar = float(np.mean(close * vol))
-        if avg_dollar < min_vol:
+        kline_df = get_kline(code, days)
+    if kline_df is None or getattr(kline_df, "empty", True):
+        return {"avg_turnover": None, "avg_vol_shares": None, "bars": 0}
+    close = kline_df["close"].values.astype(float)
+    vol = kline_df["volume"].values.astype(float)
+    vol_shares = vol * SHARES_PER_LOT               # 手 → 股 (关键修正)
+    return {"avg_turnover": float(np.mean(close * vol_shares)),
+            "avg_vol_shares": float(np.mean(vol_shares)), "bars": int(len(kline_df))}
+
+
+def check_liquidity(code: str, price: float = 0,
+                    min_turnover: float = MIN_DAILY_TURNOVER_YUAN,
+                    min_vol_shares: float = MIN_DAILY_VOL_SHARES,
+                    verbose: bool = False) -> bool:
+    """流动性过滤: 日均成交额(元) ≥ min_turnover 或 日均成交量(股) ≥ min_vol_shares.
+
+    v14.49: 单位修正(手→股), 阈值 2000万/日; 被拦截时记录实测值(原实现只记条数, 无法诊断)。
+    """
+    if not code:
+        return False
+    try:
+        m = liquidity_metrics(code)
+        if m["avg_turnover"] is None:
             return False
-        return True
+        ok = m["avg_turnover"] >= min_turnover or m["avg_vol_shares"] >= min_vol_shares
+        if not ok and verbose:
+            logger.info(f"[Liq] {code} 低流动: 日均成交额 {m['avg_turnover']/1e4:.0f}万 "
+                        f"(<{min_turnover/1e4:.0f}万) 日均量 {m['avg_vol_shares']/1e4:.0f}万股")
+        return ok
     except Exception:
         return True
 

@@ -1,0 +1,41 @@
+{
+  "date": "2026-07-31",
+  "regime": "range",
+  "questions": {
+    "q1": {
+      "score": 60,
+      "verdict": "今日无决策 — 信号不足或风控拦截, 符合低波动预期",
+      "detail": "无决策时复盘选股阈值与风控设置"
+    },
+    "q2": {
+      "score": 70,
+      "verdict": "空仓或未运行持仓监控",
+      "detail": "持仓健康度分级响应未触发"
+    },
+    "q3": {
+      "score": 60,
+      "verdict": "Agent差异数据不足(需≥2个Agent有交易)",
+      "detail": "运行AI交易员后, 差异化将在此呈现"
+    }
+  },
+  "evidence": {
+    "decision_count": 0,
+    "position_count": 0,
+    "trade_count": 0,
+    "decisions": [],
+    "trades": []
+  },
+  "actions": [
+    {
+      "priority": "P1",
+      "item": "今日无决策 — 信号不足或风控拦截, 符合低波动预期",
+      "action": "观察优化"
+    },
+    {
+      "priority": "P1",
+      "item": "Agent差异数据不足(需≥2个Agent有交易)",
+      "action": "观察优化"
+    }
+  ],
+  "generated_at": "2026-07-31T23:16:00.263446"
+}

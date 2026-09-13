@@ -36,7 +36,7 @@ from screening.strong_stock import screen_strong_stocks
 from screening.auction import auction_screen
 from screening.canslim import can_slim_filter
 from risk.position import plan_positions
-from risk.controls import check_all, check_liquidity
+from risk.controls import check_all, check_liquidity, liquidity_metrics
 from risk.position_scaling import check_add_position, check_scale_out
 from risk.profit_withdraw import check_withdraw
 from executor.sim_account import SimAccount
@@ -46,6 +46,63 @@ from backtest.engine import get_backtest_engine
 
 PROJ = Path(__file__).resolve().parent.parent
 logger = logging.getLogger("aurora")
+
+
+def _inject_sector_heat(candidates, sectors):
+    """板块热度注入 — 用已落库的 stock_sector 多对多归属计算每只候选股的板块热度.
+
+    背景: 候选股可能属于多个板块(如茅台=白酒+消费),旧逻辑只按单个 industry 字段
+    匹配,多板块覆盖不全。本 helper 为每股取其**全部**所属板块,再从板块涨幅
+    {板块名->change_pct} 里取 max(change_pct) 作为该股 heat——只要它进的板块里有
+    强势板块,热度就高。
+
+    查库策略: 一次性收集全部候选 code → get_stock_sectors_bulk 用单条 IN 查询批量
+    读回 {code: [板块名,...]}(一次连接),再内存匹配,严禁逐股建连接。
+
+    回退: stock_sector 无记录的股票,用 c.get("industry") 原字段查一次兜底,
+    保证不退化(现在能匹配到的仍能匹配到);两路皆无则 heat=0。
+
+    副作用: 就地给每只 candidate 写入 c["sector_heat"]。排序由调用方保留。
+    """
+    if not candidates:
+        return
+    try:
+        from data import fundamentals_store as _fs
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[SectorHeat] fundamentals_store 不可用,回退 industry: {e}")
+        _fs = None
+
+    # 批量读已落库的多对多板块归属(一次连接 + IN 查询)
+    sector_map: dict = {}
+    if _fs is not None and candidates:
+        try:
+            sector_map = _fs.get_stock_sectors_bulk(
+                [c.get("code") for c in candidates if c.get("code")]
+            ) or {}
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[SectorHeat] 批量读板块失败,回退 industry: {e}")
+            sector_map = {}
+
+    for c in candidates:
+        code = c.get("code")
+        names = sector_map.get(code) or []
+        if not names:
+            # 兜底: 原单 industry 字段查一次,保证不退化
+            industry = c.get("industry")
+            names = [industry] if industry else []
+        heat = 0
+        for name in names:
+            pct = sectors.get(name)
+            if pct is not None:
+                # 转 float 容错(数据源可能给 int/extr)
+                try:
+                    pct = float(pct)
+                except (TypeError, ValueError):
+                    continue
+                if pct > heat:
+                    heat = pct
+        c["sector_heat"] = heat
+
 
 
 class AuroraEngine:
@@ -382,20 +439,49 @@ class AuroraEngine:
             self.candidates = [c for c in self.candidates if c.get("code") not in _excl]
             if len(self.candidates) < before:
                 self.log.info(f"[Dedup] 排除{before - len(self.candidates)}只已被其他Agent持有")
+        # ⭐ v14.49(2026-09-11) P1-3 跨体系去重(主sim ↔ 6Agent):
+        #   实测本周 5 笔同(日,票)重复买入(300697/300913/603938/601949/002531), 两账户合计 -6,177
+        #   (占两账户已实现亏损 48%)。原去重只覆盖 Agent 之间, 主sim 与 Agent 之间没有。
+        try:
+            from multi_agent.global_dedup import held_by_others
+            _own = getattr(getattr(self, "account", None), "state_path", None)
+            _cross = held_by_others(_own)
+            if _cross:
+                _before = len(self.candidates)
+                self.candidates = [c for c in self.candidates if c.get("code") not in _cross]
+                _cut = _before - len(self.candidates)
+                if _cut:
+                    self.log.info(f"[CrossDedup] 排除{_cut}只已被其他体系持有(主sim/Agent 跨体系去重)")
+        except Exception as _e:
+            self.log.debug(f"[CrossDedup] 跳过: {_e}")
         if not self.candidates:
             self.log.info(f"[Cascade] 0 candidates")
             return
-        sectors = {s["name"]: s["change_pct"] for s in (get_sector_ranking(50) or [])}
-        for c in self.candidates:
-            c["sector_heat"] = sectors.get(c.get("industry", ""), 0)
-        self.candidates.sort(key=lambda x: x.get("sector_heat", 0), reverse=True)
-        self.log.info(f"[Cascade] {len(self.candidates)} candidates")
-        from data.sources import get_top_sectors, get_top_flow_stocks
+        # ⭐ v14.49(2026-09-11) P0-3 修复: 候选补 industry(东财 f100) —— 候选来自腾讯行情(无行业字段)
+        #   + fundamentals_store.stock_sector 表为空 → c["industry"] 恒空 → [Strong] 板块过滤
+        #   实测 70/70 次 0 通过、板块热度全 0(板块维度实质失效)。fail-open: 取不到映射不拦截。
         top_sectors = None
         try:
-            top_sectors = get_top_sectors(15)
-        except Exception:
-            pass
+            from data.sources import get_industry_map, get_industry_ranking
+            _imap = get_industry_map() or {}
+            _miss = 0
+            for _c in self.candidates:
+                if not _c.get("industry"):
+                    _ind = _imap.get(str(_c.get("code") or ""))
+                    if _ind:
+                        _c["industry"] = _ind
+                    else:
+                        _miss += 1
+            self.log.info(f"[Industry] 候选行业归属 {len(self.candidates) - _miss}/{len(self.candidates)} 只")
+            # 板块过滤判据统一到【东财行业名】(与上面 f100 同命名空间; 原用同花顺概念名 → 永不交集)
+            top_sectors = get_industry_ranking(15) or None
+        except Exception as _e:
+            self.log.debug(f"[Industry] 注入跳过: {_e}")
+        sectors = {s["name"]: s["change_pct"] for s in (get_sector_ranking(50) or [])}
+        _inject_sector_heat(self.candidates, sectors)
+        self.candidates.sort(key=lambda x: x.get("sector_heat", 0), reverse=True)
+        self.log.info(f"[Cascade] {len(self.candidates)} candidates")
+        from data.sources import get_top_flow_stocks
         flow_stocks = None
         try:
             flow_stocks = get_top_flow_stocks(200)
@@ -428,7 +514,8 @@ class AuroraEngine:
         if not candidates:
             self.analysis = []
             return
-        self.analysis = analyze_all(candidates, market_regime=self.market_regime)
+        self.analysis = analyze_all(candidates, market_regime=self.market_regime,
+                                    strategy_weights=self.cfg.get("risk", {}).get("strategy_weights", {}))
         # ── v14.41: 新股过滤 (min_listed_days配置此前从未实现) ──
         try:
             min_days = int(self.cfg.get("screening", {}).get("coarse", {}).get("min_listed_days", 100) or 0)
@@ -850,7 +937,19 @@ class AuroraEngine:
             wf = bt.walk_forward(codes, train_days=150, test_days=40, windows=2)
             for code, params in wf.items():
                 self.log.info(f"[WF] {code}: kelly={params.get('kelly',0.08):.2f} wr={params.get('win_rate',0):.0%}")
-        self.plans = plan_positions(self.scores, self.capital, self.cfg, bt)
+        # v14.47 P0 (2026-08-14 账户画像审计): 信号白名单 — 只允许画像 signal_prefer 的策略
+        #   修复前: 任何 best_strategy 都生成计划 → prev_close_B 穿透到趋势/新手/价值账户
+        #   白名单 = 画像 signal_prefer 的 key(含 prev_close_A/B, momentum_breakout, chan_buy* 等)
+        _signal_allow = None
+        try:
+            _sig_pref = (getattr(self, "agent_screening", {}) or {}).get("signal_prefer")
+            if _sig_pref:
+                _signal_allow = dict(_sig_pref)
+        except Exception:
+            pass
+        self.plans = plan_positions(self.scores, self.capital, self.cfg, bt,
+                                    profile_name=getattr(self, 'profile_name', None),
+                                    signal_allow=_signal_allow)
         # [Opt] 时间窗口开仓规则 — regime自适应
         # bull_strong/bull_weak: 全天开仓(强势行情)
         # range: 盘中正常开仓
@@ -1027,11 +1126,12 @@ class AuroraEngine:
                     p["take_profit"] = entry * (1 + rp.get("take_profit_pct", 0.20))
         except Exception:
             pass
-        day_start = getattr(self, "_day_start_value", None)
-        # v14.41: _day_start_value未设置(直接调step不走run())时, 用账户加载时的总资产(prev_total)作基准
-        # 不能用capital(初始资金) — 会把历史累计亏损误判为当日亏损, 误触Fuse熔断
-        if not day_start or day_start == self.capital:
-            day_start = getattr(getattr(self, "account", None), "prev_total", self.capital)
+        # v14.49(P1-2): 日基准改用账户固化的"当日起算基准"(day_baseline, 每日落盘复用);
+        #   原用 prev_total(上次保存值, 同日被交易/引擎重建刷新) → daily_loss≡0 → 周/月预算闸永不触发
+        try:
+            day_start = float(self.account.day_baseline())
+        except Exception:
+            day_start = getattr(getattr(self, "account", None), "prev_total", self.capital) or self.capital
         current = getattr(self.account, "total_value", day_start)
         daily_loss = (current - day_start) / day_start if day_start > 0 else 0
         if daily_loss < -0.03:
@@ -1078,15 +1178,44 @@ class AuroraEngine:
                                                       sh, f"budget_reduce:{reason[:20]}")
                                     self.log.warning(f"  [Budget EXEC] {c} 减仓: {reason}")
                         self.positions = dict(self.account.positions)
+                elif action == "pause":
+                    # v14.48 修复(2026-08-19): pause(最大回撤熔断)必须阻止新开仓
+                    #   原逻辑: 只 append alert 不清 plans → 14:30 Budget pause 触发后
+                    #   Step6 仍执行 buy(000560涨停被拒→幽灵开仓日志"1 opened")
+                    #   修复: 清空开仓计划, 保留现有持仓, 等回撤恢复
+                    if self.plans:
+                        self.log.warning(f"[Budget] pause: 清空{len(self.plans)}个开仓计划 (回撤熔断)")
+                        self.plans = []
                 elif action == "warn":
                     pass  # 只记录告警, 不执行操作
                 self.log.info(f"[Budget] {budget.get_summary()}")
         except Exception as e:
             self.log.debug(f"[Budget] check: {e}")
+        # v14.49(2026-09-11): 流动性过滤逐票记录实测值(原实现只记条数, 复盘时无法诊断);
+        #   单位修正见 risk/controls.check_liquidity(手→股)。P0-2 诊断: 打印漏斗各层剩余量,
+        #   便于下次定位"单点否决"发生在哪一层(候选→CANSLIM→分析→计划)。
         before = len(self.plans)
-        self.plans = [p for p in self.plans if check_liquidity(p.get("code", ""), p.get("entry_price", 0))]
-        if before > len(self.plans):
-            self.log.info(f"[Liq] filtered {before-len(self.plans)} low-liquidity")
+        kept, dropped = [], []
+        for _p in self.plans:
+            _c = _p.get("code", "")
+            if check_liquidity(_c):
+                kept.append(_p)
+            else:
+                try:
+                    _m = liquidity_metrics(_c)
+                    dropped.append(f"{_c}(日均{(_m['avg_turnover'] or 0)/1e4:.0f}万)")
+                except Exception:
+                    dropped.append(str(_c))
+        self.plans = kept
+        if dropped:
+            self.log.info(f"[Liq] filtered {len(dropped)} low-liquidity: " + ", ".join(dropped[:8]))
+        try:
+            self.log.info(f"[Funnel] 候选{len(getattr(self, 'candidates', []) or [])}"
+                          f"→CANSLIM{len(getattr(self, 'screened', []) or [])}"
+                          f"→分析{len(getattr(self, 'analysis', []) or [])}"
+                          f"→计划{len(self.plans)}(流动性砍{len(dropped)})")
+        except Exception:
+            pass
         self.log.info(f"[Step5] {len(self.plans)} passed, {len(self.alerts)} alerts")
 
         # ── P1: 系统健康检查 ──
@@ -1109,10 +1238,11 @@ class AuroraEngine:
         # ── 每日PnL记录到预算(即使无交易) ──
         try:
             from risk.budget import RiskBudget
-            day_start = getattr(self, "_day_start_value", None)
-            # v14.41: 同step_risk — 基准用prev_total而非capital, 防历史亏损误判为当日亏损
-            if not day_start or day_start == self.capital:
-                day_start = getattr(acc, "prev_total", self.capital)
+            # v14.49(P1-2): 同 step_risk — 用账户固化日基准(day_baseline)
+            try:
+                day_start = float(acc.day_baseline())
+            except Exception:
+                day_start = getattr(acc, "prev_total", self.capital) or self.capital
             current = getattr(acc, "total_value", day_start)
             daily_pnl = (current - day_start) / day_start if day_start > 0 else 0
             budget = RiskBudget(self.cfg, self.capital)
@@ -1123,6 +1253,38 @@ class AuroraEngine:
             self.positions = dict(acc.positions)
             self.log.info(f"[Step6] 无新交易, 已有持仓: {len(self.positions)}只")
             return
+        # v14.46 方案2: 跨Agent信号层去重 — 同一天同一(代码+策略)只允许第一个Agent买入
+        #   实盘教训: 002458 被4个Agent同日同信号(momentum)买入全亏(-6.4%~-8%), 同质化放大亏损
+        #   claims: dict[(code,strategy)] -> agent名; engine从coordinator注入已认领集合
+        _claims = getattr(self, "agent_signal_claims", None) or {}
+        _my_name = getattr(self, "profile_name", "") or ""
+        _claim_own = {}
+        _plans_kept = []
+        for p in self.plans:
+            _key = (p.get("code", ""), p.get("strategy", p.get("signal", "?")))
+            if _key in _claims and _claims[_key] != _my_name:
+                self.log.warning(f"[SignalDedup] {_key} 已被{_claims[_key]}同日同信号买入, 跳过")
+                continue
+            _plans_kept.append(p)
+            _claim_own[_key] = _my_name
+        if len(_plans_kept) != len(self.plans):
+            self.log.info(f"[SignalDedup] {len(self.plans)}→{len(_plans_kept)} 计划 (同日同信号去重)")
+        self.plans = _plans_kept
+        # 回写本Agent认领 → coordinator收集后注入后续Agent
+        if _claim_own:
+            try:
+                self.agent_signal_claims_own = _claim_own
+            except Exception:
+                pass
+        if not self.plans:
+            self.positions = dict(acc.positions)
+            return
+        # ⭐ v14.48 幽灵开仓修复 (2026-08-19): 检查 acc.buy() 返回值
+        #   原逻辑: 不检查返回值 → 000560 涨停买不进(现价=涨停价)仍记 "1 opened"+win记录
+        #   现象: 日志 "Step6 1 opened" 但 trades/state 无成交 = 账实不符
+        #   修复: 买入失败的计划从 plans 剔除, 不计 opened/不记赢单, 打 warning 告警
+        _executed = []
+        _failed = []
         for p in self.plans:
             # ── 六问证据链: 买入决策上下文 ──
             now_hhmm = datetime.now().strftime("%H:%M")
@@ -1136,15 +1298,29 @@ class AuroraEngine:
                 "phase": getattr(self, "phase", "?"),
                 "score": p.get("score", 0),
             }
-            acc.buy(p["code"], p["entry_price"], p["shares"],
-                    p.get("strategy", ""), context=buy_ctx)
+            try:
+                r = acc.buy(p["code"], p["entry_price"], p["shares"],
+                            p.get("strategy", ""), context=buy_ctx)
+            except Exception as _e:
+                r = {"success": False, "error": f"异常:{_e}"}
+            if isinstance(r, dict) and r.get("success"):
+                _executed.append(p)
+            else:
+                _failed.append(p)
+                err = r.get("error", "未知") if isinstance(r, dict) else str(r)
+                self.log.warning(f"[Step6] 买入失败 {p.get('code','?')}: {err} — 不计入成交")
+                self.alerts.append({"type": "buy_rejected", "code": p.get("code", "?"),
+                                    "reason": err, "time": datetime.now().isoformat()})
+        self.plans = _executed
         self.positions = dict(acc.positions)
-        for p in self.plans:
-            record_trade_result(p.get("strategy", "?"), 0, True)
-            bt = get_backtest_engine()
-            bt.update_stats(p.get("strategy", "?"), 0, True)
+        # ⭐ v14.50 P2-A修复(2026-09-04 周复盘): 移除"买入即记win=True/pnl=0"假记录
+        #   原代码每次买入 record_trade_result(strategy,0,True)+bt.update_stats(strategy,0,True)
+        #   → strategy_evolution.json 全是胜率100%+平均PnL 0% 的假数据(prev_close_B 62笔100%)
+        #   → 策略健康度表完全失真。真实平仓结果改在 SimAccount.sell() 清仓时记录。
         for p in self.plans:
             record_entry(p)
+        if _failed:
+            self.log.warning(f"[Step6] {len(_failed)}/{len(_executed)+len(_failed)} 买入被拒(涨停/资金/其他) — 仅{len(_executed)}笔真实成交")
         wd = check_withdraw(acc.total_value, self.capital)
         if wd.get("should_withdraw"):
             self.log.warning(f"[Withdraw] {wd['reason']}")
@@ -1175,6 +1351,18 @@ class AuroraEngine:
             pass
 
     # ──────── step 9: position monitoring ────────
+    def _monitor_kline_cache(self) -> dict:
+        """构建持仓K线缓存 (v14.46: 供移动止盈ATR增强+突发事件共用)"""
+        kline_cache = {}
+        try:
+            for code in (self.positions or {}):
+                df = get_kline(code, 30)
+                if not getattr(df, 'empty', True):
+                    kline_cache[code] = df
+        except Exception as e:
+            self.log.debug(f"[KlineCache] 构建失败: {e}")
+        return kline_cache
+
     def step_monitor(self):
         # v14.43: 除权除息检查 — 持仓分红/送转/配股在除权日自动调整
         try:
@@ -1185,7 +1373,18 @@ class AuroraEngine:
                         self.log.info(f"  [CorpAct] {ev['code']} {ev['date']}: {ev['desc']}")
         except Exception as e:
             self.log.debug(f"  [CorpAct] check fail: {e}")
-        alerts = watch_positions(self.positions, self.cfg)
+        # v14.46: 构建持仓K线缓存一次(供移动止盈ATR增强+突发事件共用, 消除重复拉取)
+        monitor_kline_cache = self._monitor_kline_cache()
+        # v14.47: 传 profile_name 供移动止盈按画像差异化(价值/趋势长持仓阈值上调)
+        _watch_cfg = dict(self.cfg) if self.cfg else {}
+        _watch_cfg["profile_name"] = getattr(self, "profile_name", "")
+        # v14.50: 注入画像持仓参数 → watcher 的 min_hold 保护按画像差异化
+        #   (短线1天/上班族3天/趋势10天/价值20天 由 max_hold_days//3 决定, 上限3与engine侧一致)
+        _amhd = int(getattr(self, "agent_trading_style", {}).get("max_hold_days", 10) or 10)
+        _mhd = max(1, min(_amhd // 3, 3)) if _amhd >= 3 else 1
+        _watch_cfg.setdefault("risk", {})["min_hold_days"] = _mhd
+        _watch_cfg.setdefault("risk", {})["max_hold_days"] = _amhd
+        alerts = watch_positions(self.positions, _watch_cfg, kline_cache=monitor_kline_cache)
         self.alerts.extend(alerts)
         # v14.45: 昨收价极简战法离场 — 短线狙击手持仓跌破昨收即卖(核心铁律)
         try:
@@ -1217,11 +1416,8 @@ class AuroraEngine:
         idx_data = get_index_snapshot(["000001"])
         idx_chg = idx_data.get("000001", {}).get("change_pct", 0) if idx_data else 0
         market_status = {"index_change": idx_chg}
-        kline_cache = {}
-        for code in self.positions:
-            df = get_kline(code, 30)
-            if not getattr(df, 'empty', True):
-                kline_cache[code] = df
+        # v14.46: 复用上面构建的 monitor_kline_cache (原重复拉取持仓K线)
+        kline_cache = monitor_kline_cache
         contingency_alerts = check_contingency(self.positions, market_status, kline_cache)
         if contingency_alerts:
             self.alerts.extend(contingency_alerts)
@@ -1281,7 +1477,12 @@ class AuroraEngine:
             elif a_type == "scale_out" and shares > 0 and acc and code in acc.positions:
                 acc.sell(code, price, shares, f"scale_out@{price:.2f}")
             elif a_type == "trailing_stop" and acc and code in acc.positions:
-                acc.sell(code, price, acc.positions[code]["shares"], f"trailing@{price:.2f}")
+                # ⭐ v14.50 修复(2026-09-04 周复盘 P0-A): watcher 抬线通知(trailing_stop) ≠ 卖出信号!
+                #   根因: watch_positions 在"移动止盈线上移"时发 type=trailing_stop(仅状态变化),
+                #   破位才发 type=breach_stop。原代码把抬线当卖单执行(reason=trailing@...),
+                #   → 每笔持仓第一次被监控即全仓清出(买入次日09:34批量卖), 交易员被迫隔日超短。
+                #   修复: trailing_stop 仅更新内存止损线, 不执行卖出; 真正卖出由 breach_stop 触发。
+                self.log.info(f"  [TrailingRaise] {code}: 移动止盈线上移至{price:.2f}(仅抬线,不卖出)")
             elif a_type == "mtf" and acc and code in acc.positions:
                 action = a.get("action", "close_long")
                 desc = a.get("desc", "")
@@ -1353,8 +1554,219 @@ class AuroraEngine:
                     self.positions = dict(acc.positions)
             except Exception as we:
                 self.log.debug(f"[Waterfall] batch: {we}")
+        # ═══ v14.47: 昨收战法盘中执行器（与 web auto_trader 执行层完全一致 — 短线狙击手专属）═══
+        # 持仓执行: 破位清仓(连续5根5分K)/T0高抛接回/加仓/减仓/止损9% + 空仓建仓(开盘3分钟站稳昨收)
+        try:
+            if getattr(self, 'profile_name', '') == '短线狙击手' and acc:
+                from strategies.prev_close_executor import (
+                    analyze_hold, check_entry, fetch_min5_today, trend_state,
+                    TREND_TARGET_PCT, rank_buy_priority, GAP_DOWN_STOP_PCT)
+                import datetime as _pcdt
+                _day = _pcdt.datetime.now().strftime("%Y-%m-%d")
+                # ⭐ 2026-08-10 P2 环境分级: 大盘强(上证现价>昨收) → up趋势破位容忍(洗盘不跑)
+                _env_strong = False
+                try:
+                    _iq = get_tencent_quotes(["sh000001"]).get("sh000001", {})
+                    _ip = float(_iq.get("price") or 0)
+                    _ipre = float(_iq.get("pre_close") or 0)
+                    if _ip > 0 and _ipre > 0:
+                        _env_strong = _ip > _ipre
+                except Exception:
+                    pass
+                # 跨日状态重置: T0待接回 / 当日清仓黑名单（web 同款 _tick 逻辑）
+                if getattr(self, "_pc_state_day", "") != _day:
+                    self._pc_t0_pending = {}
+                    self._pc_just_sold = set()
+                    self._pc_clear_log = []   # ⭐ 2026-08-10 清仓后决策日志（与 web clear_log 一致）
+                    self._pc_state_day = _day
+                if not hasattr(self, "_pc_clear_log"):
+                    self._pc_clear_log = []
+                if not hasattr(self, "_pc_t0_pending"):
+                    self._pc_t0_pending = {}
+                if not hasattr(self, "_pc_just_sold"):
+                    self._pc_just_sold = set()
+                # ── 强势池: 当日候选池代码（web strong_pool 对应: 短线狙击手筛选后候选）──
+                _pool = set()
+                for _c in (getattr(self, "candidates", None) or []):
+                    _cd = _c.get("code", "") if isinstance(_c, dict) else ""
+                    if _cd:
+                        _pool.add(_cd)
+                self._pc_pool = _pool
+                # ── 持仓票: 完整执行层（清仓/T0/加仓/减仓/止损9%）──
+                for pc, pos in list(acc.positions.items()):
+                    try:
+                        m5 = fetch_min5_today(pc)
+                        if len(m5) < 6:
+                            continue
+                        kdf = get_kline(pc, 30)
+                        if kdf is None or getattr(kdf, "empty", True) or len(kdf) < 3:
+                            continue
+                        closes = [float(x) for x in kdf["close"].values]
+                        prev_close = float(closes[-2])
+                        if prev_close <= 0:
+                            continue
+                        _tr = trend_state(closes)
+                        _shares = int(pos.get("shares", 0))
+                        _locked = acc.today_buys.get(pc, 0)
+                        _sellable = max(0, _shares - _locked)
+                        _cost = float(pos.get("avg_cost", 0))
+                        _in_pool = pc in _pool
+                        # ⭐ P0-② 开盘跳空熔断阈值: 读 config.yaml risk.gap_down_stop_pct(%, 默认8; 0=关闭)
+                        try:
+                            _gap_stop = float((getattr(self, "cfg", {}) or {})
+                                              .get("risk", {}).get("gap_down_stop_pct",
+                                                                  GAP_DOWN_STOP_PCT))
+                        except Exception:
+                            _gap_stop = GAP_DOWN_STOP_PCT
+                        sigs, self._pc_t0_pending[pc] = analyze_hold(
+                            m5, prev_close, _tr, _shares, _sellable, _cost, _in_pool,
+                            self._pc_t0_pending.get(pc, 0), _env_strong, _gap_stop)
+                        for s in sigs:
+                            _act = s["action"]
+                            try:
+                                if _act in ("清仓", "止损清仓", "开盘跳空止损") and _sellable >= 100:
+                                    acc.sell(pc, s["price"], _sellable, f"昨收执行:{s['reason']}")
+                                    self._pc_just_sold.add(pc)
+                                    # ⭐ 2026-08-10 清仓后决策（与 web 三岔口一致）: 趋势没坏→等重进; 坏→放弃
+                                    try:
+                                        _dec = "重进" if _tr in ("up", "range") else "放弃"
+                                        self._pc_clear_log.insert(0, {
+                                            "time": _pcdt.datetime.now().strftime("%H:%M:%S"),
+                                            "code": pc, "reason": s["reason"], "trend": _tr, "decision": _dec})
+                                        self._pc_clear_log = self._pc_clear_log[:10]
+                                    except Exception:
+                                        pass
+                                    self.log.warning(f"  [PrevCloseEXEC] {pc} {_act} @{s['price']}: {s['reason']} → 决策:{_dec if '_dec' in dir() else ''}")
+                                elif _act == "T0高抛" and _sellable >= 100:
+                                    acc.sell(pc, s["price"], s["shares"], f"昨收T0高抛:{s['reason']}")
+                                    self.log.warning(f"  [PrevCloseEXEC] {pc} T0高抛 {s['shares']}股 @{s['price']}: {s['reason']}")
+                                elif _act == "T0接回":
+                                    acc.buy(pc, s["price"], s["shares"], f"昨收T0接回:{s['reason']}",
+                                            context={"strategy": "prev_close_t0", "signal": "prev_close", "phase": getattr(self, 'phase', '')})
+                                    self.log.warning(f"  [PrevCloseEXEC] {pc} T0接回 {s['shares']}股 @{s['price']}")
+                                elif _act == "加仓":
+                                    acc.buy(pc, s["price"], s["shares"], f"昨收加仓:{s['reason']}",
+                                            context={"strategy": "prev_close_add", "signal": "prev_close", "phase": getattr(self, 'phase', '')})
+                                    self.log.warning(f"  [PrevCloseEXEC] {pc} 加仓 {s['shares']}股 @{s['price']}: {s['reason']}")
+                                elif _act == "减仓" and _sellable >= 100:
+                                    acc.sell(pc, s["price"], s["shares"], f"昨收减仓:{s['reason']}")
+                                    self.log.warning(f"  [PrevCloseEXEC] {pc} 减仓 {s['shares']}股 @{s['price']}: {s['reason']}")
+                            except Exception as _e2:
+                                self.log.debug(f"  [PrevCloseEXEC] {pc} {_act}执行失败: {_e2}")
+                    except Exception as e:
+                        self.log.debug(f"  [PrevCloseEXEC] {pc}: {e}")
+                self.positions = dict(acc.positions)
+                # ── 空仓建仓: 候选池开盘3分钟站稳昨收 → 趋势分层仓位（web 同款）──
+                if not acc.positions and _pool:
+                    # ⭐ 2026-08-10 市场护栏（与 web 一致）: 大盘跌≤-1% → 暂停新开仓
+                    _guard_ok = True
+                    try:
+                        _idx_g = get_index_snapshot(["000001"]).get("000001", {})
+                        _idx_chg_g = float(_idx_g.get("change_pct") or 0)
+                        if _idx_chg_g <= -1.0:
+                            _guard_ok = False
+                            self.log.warning(f"  [PrevCloseEXEC] 市场护栏: 大盘{_idx_chg_g:.1f}% ≤-1% 暂停建仓")
+                    except Exception:
+                        pass
+                    if _guard_ok:
+                        try:
+                            # ⭐ 2026-08-10 当时择优分排序（v14.48: 0.35信号分+0.20竞价CC+0.15趋势+0.15板块热度+0.15龙头）
+                            # 信号分只是入场资格; 同样站稳昨收, 先买"竞价被抢筹+板块风口+龙头"的
+                            # 趋势字段: 从日K现算(与 check_entry 同源 get_kline), 缺失时 rank 按 range 中性处理
+                            _pool_cands = [_c for _c in (getattr(self, "candidates", None) or [])
+                                           if isinstance(_c, dict) and _c.get("code", "") in _pool]
+                            for _pc in _pool_cands:
+                                try:
+                                    _kdf = get_kline(_pc.get("code", ""), 30)
+                                    if _kdf is not None and not getattr(_kdf, "empty", True) and len(_kdf) >= 3:
+                                        _pc["trend"] = trend_state([float(x) for x in _kdf["close"].values])
+                                except Exception:
+                                    pass
+                            _ranked = rank_buy_priority(_pool_cands)[:5]
+                            for _c in _ranked:
+                                code = _c.get("code", "")
+                                if code in self._pc_just_sold:
+                                    continue
+                                # ⭐ 2026-08-16 P0-② 强势池护栏在【最终买入点】再守一道:
+                                #   runner.py:166-174 信号层已拦 prev_close_B(仅 strong_grade∈{A,B} 或
+                                #   strong_score≥70)。此处的盘中建仓(空仓开盘3分钟站稳)只对 self.candidates
+                                #   迭代 —— 该池本身已过 screen_strong_stocks(≥70/60)。这里再补一道显式护栏,
+                                #   对候选带 strong_grade 却为 C/D 且 strong_score<70 的直接跳过(与 runner 同源口径)。
+                                _g = str(_c.get("strong_grade", ""))
+                                _sc = float(_c.get("strong_score", 0) or 0)
+                                if _g not in ("A", "B") and _sc < 70 and _g != "":
+                                    logger.debug(f"[PrevCloseEXEC] {code}: 强势池护栏拦截建仓 "
+                                                 f"(strong_grade={_g} score={_sc})")
+                                    continue
+                                m5 = fetch_min5_today(code)
+                                if len(m5) < 3:
+                                    continue
+                                kdf = get_kline(code, 30)
+                                if kdf is None or getattr(kdf, "empty", True) or len(kdf) < 3:
+                                    continue
+                                closes = [float(x) for x in kdf["close"].values]
+                                prev_close = float(closes[-2])
+                                if prev_close <= 0:
+                                    continue
+                                # ⭐ 2026-08-16 P0-② auto 自动选买入模式(按标的波动/趋势):
+                                #   same_close=当日收盘买(高波动强趋势, 吃隔夜跳空) / next_open=次日开盘买。
+                                #   ⚠️ 实盘引擎原生只支持"次日开盘3分钟站稳昨收"的单一路径(engine 无尾盘收盘买入调度器,
+                                #   T+1 架构下当日收盘买=尾盘买入未实现)。故 same_close 票保守回落 native 路径执行,
+                                #   并把 entry_mode 打到候选/买入 context 里供审计与后续回调调度器消费。
+                                _entry_mode = "next_open"
+                                try:
+                                    from strategies.prev_close_play import _auto_entry_mode
+                                    _entry_mode = _auto_entry_mode(kdf)
+                                except Exception:
+                                    _entry_mode = "next_open"
+                                _c["entry_mode"] = _entry_mode
+                                # ⭐ 2026-08-10 P1 量能确认: 前5日日K均量(手) 喂入 check_entry
+                                try:
+                                    _vols_df = kdf["volume"].values if "volume" in kdf else []
+                                    _avg5v = float(sum(float(x) for x in _vols_df[-6:-1]) / 5) if len(_vols_df) >= 6 else 0.0
+                                except Exception:
+                                    _avg5v = 0.0
+                                ok, price = check_entry(m5, prev_close, avg5_vol=_avg5v, vol_confirm=1.0)
+                                if not ok:
+                                    continue
+                                _tr = trend_state(closes)
+                                # ⭐ 2026-08-11 对齐实盘 v14.55/回测 entry_trend_gate=1: 下降趋势禁建仓（逆势接刀）
+                                if _tr == "down":
+                                    continue
+                                # ⭐ 2026-08-14 P0修复(本周实盘审计): 趋势分层仓位与风控单笔上限取min
+                                #   原逻辑: shares = cash × TREND_TARGET_PCT(up=0.8) → 603232 建仓 42,500股
+                                #   = 76.7万(80%仓位)! 超 max_position_pct=28% 上限 → 单笔亏5.64%就-4.3万
+                                #   web 端 v14.52 已修(_single_position_cap), 工作流漏同步
+                                #   修复: target = min(趋势分层目标, 风控单笔上限)  (对齐 web _single_position_cap)
+                                _target = TREND_TARGET_PCT.get(_tr, 0.5)
+                                try:
+                                    _mpp = float((getattr(self, "agent_trading_style", {}) or {})
+                                                 .get("max_position_pct",
+                                                      (getattr(self, "cfg", {}) or {}).get("risk", {})
+                                                      .get("max_position_pct", 0.28)))
+                                    if _mpp > 0:
+                                        _target = min(_target, _mpp)
+                                except Exception:
+                                    pass
+                                shares_buy = int(acc.cash * _target / price / 100) * 100
+                                if shares_buy >= 100:
+                                    acc.buy(code, price, shares_buy,
+                                            f"昨收开盘3分钟站稳建仓({_tr})",
+                                            context={"strategy": "prev_close_entry", "signal": "prev_close",
+                                                     "phase": getattr(self, 'phase', ''),
+                                                     "entry_mode": _entry_mode})
+                                    self.log.warning(f"  [PrevCloseEXEC] {code} 建仓 {shares_buy}股 @{price} "
+                                                     f"趋势{_tr} entry_mode={_entry_mode}"
+                                                     + (" (same_close→引擎无尾盘收盘调度, 保守回落 native 次日开盘路径)"
+                                                        if _entry_mode == "same_close" else ""))
+                                    self.positions = dict(acc.positions)
+                                    break
+                        except Exception as e:
+                            self.log.debug(f"  [PrevCloseEXEC] 建仓: {e}")
+        except Exception:
+            pass
         # T+0日内做T
-        if acc and self.positions:
+        if acc and self.positions and getattr(self, 'profile_name', '') != '短线狙击手':
             try:
                 from risk.t0_trading import detect_t0_signal, execute_t0
                 t0_quotes = get_tencent_quotes(list(self.positions.keys()))
@@ -1512,15 +1924,41 @@ class AuroraEngine:
                 h = health.get(n, {})
                 mark_strategy_inactive(n, reason=f"WR={h.get('win_rate',0):.0%} composite={h.get('composite',0)}")
         # [Soul] 贝叶斯信念更新
+        # 修复(2026-08-14, P1): 旧代码用 `best_score>=60 or confidence>=0.6` 当盈亏
+        # 伪标签喂给 update_belief —— "信号评分"≠"真实盈亏", 会错误膨胀胜率, 而信念
+        # 会反向影响仓位(get_adjusted_kelly)。改为只用**真实已平仓盈亏**判定胜负:
+        #   ① 从 account 收集真实平仓 sell trades(pnl_pct);
+        #   ② 无真实平仓证据 → 跳过信念更新(记日志), 绝不喂评分伪标签。
         try:
             if hasattr(self, "analysis") and self.analysis:
-                for a in self.analysis:
-                    strat = a.get("best_strategy", "")
-                    if strat and a.get("signal"):
-                        outcome = a.get("best_score", 0) >= 60 or a.get("confidence", 0) >= 0.6
+                # 收集真实已平仓盈亏(兼容 get_trades() 方法与 trades 属性两种账户)
+                acc = getattr(self, "account", None)
+                realtrades = []
+                if acc is not None:
+                    if callable(getattr(acc, "get_trades", None)):
+                        realtrades = list(acc.get_trades() or [])
+                    elif isinstance(getattr(acc, "trades", None), list):
+                        realtrades = list(acc.trades)
+                realized = [t for t in realtrades
+                            if isinstance(t, dict) and t.get("action") == "sell"
+                            and t.get("pnl_pct") is not None]
+                if not realized:
+                    self.log.debug("[Bayes] 无真实平仓盈亏证据, 跳过信念更新(不喂评分伪标签)")
+                else:
+                    for a in self.analysis:
+                        strat = a.get("best_strategy", "")
+                        if not (strat and a.get("signal")):
+                            continue
+                        # 最近一笔匹配该策略的真实平仓(兼容顶层 strategy / buy_context 嵌套)
+                        candidates = [t for t in realized
+                                      if (t.get("strategy")
+                                          or (t.get("buy_context") or {}).get("strategy")) == strat]
+                        pool = candidates or realized  # 该策略无平仓时退化为全局真实盈亏
+                        latest = pool[-1]
+                        outcome = latest.get("pnl_pct", 0) > 0
                         update_belief(strat, outcome)
-        except Exception:
-            pass
+        except Exception as e:
+            self.log.debug(f"[Bayes] 信念更新跳过: {e}")
         # [Soul] ML因子IC校准
         try:
             from strategies.scoring import calibrate_ml_weights
@@ -1734,11 +2172,19 @@ class AuroraEngine:
         try:
             from risk.budget import RiskBudget
             budget = RiskBudget(self.cfg, self.capital)
-            day_start = getattr(self, "_day_start_value", self.capital)
+            # v14.49(P1-2): 日基准=账户固化值; 日终同时记录总资产供次日作基准
+            try:
+                day_start = float(self.account.day_baseline())
+            except Exception:
+                day_start = getattr(self, "_day_start_value", self.capital) or self.capital
             current = getattr(self.account, "total_value", day_start) if hasattr(self, "account") else day_start
             daily_pnl = (current - day_start) / day_start if day_start > 0 else 0
             budget.record_pnl(daily_pnl, current)
-            self.log.info(f"[Close] PnL入账: {daily_pnl*100:+.2f}%")
+            try:
+                self.account.mark_day_close()
+            except Exception:
+                pass
+            self.log.info(f"[Close] PnL入账: {daily_pnl*100:+.2f}% (基准{day_start:,.0f})")
         except Exception as e:
             self.log.debug(f"[Close] PnL: {e}")
         

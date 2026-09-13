@@ -10,12 +10,13 @@ logger = logging.getLogger("aurora.evolve")
 DATA = Path(__file__).resolve().parent.parent / "data" / "strategy_evolution.json"
 
 def _load():
-    try: return json.loads(DATA.read_text()) if DATA.exists() else {}
+    # v14.50 P2-B修复: 显式utf-8(原默认GBK读utf-8文件崩溃→月度报告"gbk codec can't decode")
+    try: return json.loads(DATA.read_text(encoding="utf-8")) if DATA.exists() else {}
     except Exception: return {}
 
 def _save(d):
     DATA.parent.mkdir(parents=True, exist_ok=True)
-    DATA.write_text(json.dumps(d, indent=2, ensure_ascii=False))
+    DATA.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 # ── 基础记录 (与v1.0兼容) ──

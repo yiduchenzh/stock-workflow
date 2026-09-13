@@ -69,47 +69,75 @@ class RiskBudget:
         except Exception as e:
             logger.debug(f"[Budget] save: {e}")
 
+    def _sane_value(self, v):
+        """⭐ v14.48 净值合理性校验 (2026-08-19): 防 peak_value 被污染
+        现象: risk_budget.json peak_value=20,529,521 (08-07 异常注入) → drawdown 永久 -95.3%
+              → Budget pause 误触发, 系统被误锁
+        防护: 净值超过 [capital*0.01, capital*5] 视为数据异常, 拒绝作为峰值基准
+        """
+        try:
+            v = float(v)
+            lo = self.capital * 0.01
+            hi = self.capital * 5.0
+            if v <= 0 or v < lo or v > hi:
+                return None
+            return v
+        except Exception:
+            return None
+
     def record_pnl(self, daily_pnl_pct: float, current_value: float = None):
-        """每日记录PnL — v14.41: 按日期去重, 同日多次扫描只累加一次, 防虚增"""
-        now = time.time()
-        day_secs = 86400
-        week_secs = day_secs * 7
-        month_secs = day_secs * 30
+        """每日记录PnL — v14.49(2026-09-11, P1-2): 改为【按日期覆盖】口径.
+
+        背景: 原实现"同一自然日只累加一次", 而引擎每日多次扫描(morning/monitor/noon/close),
+        首次调用多在开盘前 → 记下 ≈0 的值后当日不再更新 → weekly_pnl 恒 ~1e-9
+        (2026-09-11 复盘实测 risk_budget*.json weekly_pnl=1e-9~1e-10) → 周-5%/月-8%闸永不触发。
+        现在: state["daily"][date] = daily_pnl_pct(覆盖写, 天然幂等, 同日多次调用不虚增);
+              weekly_pnl = 近7天求和, monthly_pnl = 近30天求和(每次重算, 自动滚动)。
+        兼容: 保留 weekly_start/monthly_start/last_record_date 字段(旧文件可直接读)。
+        """
         today_str = time.strftime("%Y-%m-%d")
+        sane_cur = self._sane_value(current_value) if current_value else None
 
-        # 同日去重: 当天已记录过则只更新净值/回撤, 不重复累加盈亏
-        if self.state.get("last_record_date") == today_str:
-            if current_value:
-                self.state["current_value"] = current_value
-                if current_value > self.state.get("peak_value", 0):
-                    self.state["peak_value"] = current_value
-                peak = self.state.get("peak_value", 1) or 1
-                self.state["drawdown_pct"] = (current_value - peak) / max(peak, 1)
-                self.state["drawdown_pct"] = max(-1.0, min(0.0, self.state["drawdown_pct"]))
-            self.state["last_update"] = str(time.strftime("%Y-%m-%d %H:%M"))
-            self._save()
-            return
+        # ① 每日盈亏按日期覆盖写(幂等)
+        daily = self.state.get("daily")
+        if not isinstance(daily, dict):
+            daily = {}
+        daily[today_str] = float(daily_pnl_pct or 0.0)
+        # 只保留近 40 天
+        if len(daily) > 40:
+            for k in sorted(daily)[:-40]:
+                daily.pop(k, None)
+        self.state["daily"] = daily
 
-        # 周预算滚动
-        if now - self.state["weekly_start"] > week_secs:
-            self.state["weekly_pnl"] = 0.0
-            self.state["weekly_start"] = now
-        self.state["weekly_pnl"] += daily_pnl_pct
-        self.state["weekly_pnl"] = max(-1.0, min(1.0, self.state["weekly_pnl"]))
+        # ② 周/月 = 近 7 / 近 30 天求和
+        def _sum_days(n: int) -> float:
+            import datetime as _dt
+            today = _dt.date.today()
+            tot = 0.0
+            for k, v in daily.items():
+                try:
+                    d = _dt.date.fromisoformat(k)
+                except Exception:
+                    continue
+                if 0 <= (today - d).days < n:
+                    tot += float(v or 0)
+            return max(-1.0, min(1.0, tot))
 
-        # 月预算滚动
-        if now - self.state["monthly_start"] > month_secs:
-            self.state["monthly_pnl"] = 0.0
-            self.state["monthly_start"] = now
-        self.state["monthly_pnl"] += daily_pnl_pct
-        self.state["monthly_pnl"] = max(-1.0, min(1.0, self.state["monthly_pnl"]))
+        self.state["weekly_pnl"] = _sum_days(7)
+        self.state["monthly_pnl"] = _sum_days(30)
+        self.state["weekly_start"] = self.state.get("weekly_start") or time.time()
+        self.state["monthly_start"] = self.state.get("monthly_start") or time.time()
 
         # 最大回撤
-        if current_value:
-            self.state["current_value"] = current_value
-            if current_value > self.state["peak_value"]:
-                self.state["peak_value"] = current_value
-            self.state["drawdown_pct"] = (current_value - self.state["peak_value"]) / max(self.state["peak_value"], 1)
+        if sane_cur is not None:
+            self.state["current_value"] = sane_cur
+            peak = self._sane_value(self.state.get("peak_value", 0))
+            if peak is None:
+                peak = self.capital
+            if sane_cur > peak:
+                self.state["peak_value"] = sane_cur
+                peak = sane_cur
+            self.state["drawdown_pct"] = (sane_cur - peak) / max(peak, 1)
             self.state["drawdown_pct"] = max(-1.0, min(0.0, self.state["drawdown_pct"]))
 
         self.state["last_record_date"] = today_str
@@ -159,7 +187,6 @@ class RiskBudget:
                 "action": "pause",
             })
             return result
-
         # 检查4: 中等级别预警 — 周亏损已到80%上限
         weekly_80pct = self.weekly_limit * 0.8
         if weekly <= weekly_80pct:

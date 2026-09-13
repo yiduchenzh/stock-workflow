@@ -31,11 +31,11 @@ class EngineLiveWrapper:
             "positions_count": len(self.engine.positions),
             "fail_count": self.fail_count,
         }
-        LIVE_STATE.write_text(json.dumps(state))
+        LIVE_STATE.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     
     def _load_state(self):
         if LIVE_STATE.exists():
-            try: return json.loads(LIVE_STATE.read_text())
+            try: return json.loads(LIVE_STATE.read_text(encoding="utf-8"))
             except: return {}
         return {}
     
@@ -74,13 +74,24 @@ class EngineLiveWrapper:
     
     def _run_intraday_scan(self):
         try:
-            from screening.intraday_scan import run_intraday_cycle
+            from screening.intraday_scan import run_intraday_cycle, get_session
             result = run_intraday_cycle(self.engine)
             if result.get("new_signals",0) > 0:
                 self.log.info(f"[Live] {result['session']}: 新{result['new_signals']}信号")
-                from notify.pusher import push_trade_plan
-                try: push_trade_plan(self.engine)
-                except: pass
+                # v14.46 P1修复(2026-08-14): 推送节流 — 每个时段(morning/mid/tail)只推1次交易计划
+                #   原逻辑: 每5分钟有新信号就推 → 一天推10+次"今日交易计划"(09:30~09:54连推5次)
+                #   修复: session级节流(状态内存), 同session内重复信号不重复推
+                _session = result.get("session", "")
+                _last = getattr(self, "_last_plan_push_session", "")
+                if _session == "closed":
+                    self.log.info(f"[Live] 闭市: 不推送交易计划")
+                elif _session and _session == _last:
+                    self.log.info(f"[Live] {_session} 时段已推送过交易计划, 节流跳过")
+                else:
+                    self._last_plan_push_session = _session
+                    from notify.pusher import push_trade_plan
+                    try: push_trade_plan(self.engine)
+                    except: pass
         except Exception as e:
             self.log.warning(f"[Live] intraday fail: {e}")
 
@@ -97,6 +108,23 @@ class EngineLiveWrapper:
                         self.log.warning(f"[LIVE] usSPY跌{spy}%! A股开盘预警")
         except: pass
 
+    def _sync_account_from_disk(self):
+        """⭐ v14.48 幽灵持仓修复 (2026-08-19):
+        现象: daemon(常驻)与计划任务(Aurora_Monitor_5min/FullScan)并发操作 sim_state.json
+              → 09:30 daemon 内存加载持仓300189; 09:34 另一进程卖出写盘空仓
+              → daemon 内存仍"持仓1" 到收盘, live_state positions_count=1 但磁盘空
+        修复: 每轮循环从磁盘 reload 账户, 内存 positions 与磁盘严格一致
+        """
+        try:
+            if getattr(self, "engine", None) and getattr(self.engine, "account", None):
+                self.engine.account._load()
+                self.engine.positions = dict(self.engine.account.positions)
+                if hasattr(self.engine, "_day_start_value"):
+                    self.engine._day_start_value = getattr(self.engine.account, "prev_total", None) \
+                        or self.engine._day_start_value
+        except Exception as e:
+            self.log.debug(f"[Live] account reload fail: {e}")
+
     def run_forever(self):
         """常驻运行主循环"""
         self.log.info(f"[Live] 启动实时流引擎, 轮询间隔={self.interval}s")
@@ -112,9 +140,13 @@ class EngineLiveWrapper:
                     time.sleep(300)
                     continue
                 # 非交易时段跳过
+                # v14.46 P0修复(2026-08-14): 收盘边界 930(15:30)→897(14:57)
+                #   原逻辑 15:00-15:30 收盘后仍跑盘中扫描+推送"今日交易计划"=纯噪音
+                #   14:57 收盘竞价开始, 盘中扫描/交易计划推送应截止; 尾盘选股窗口已由
+                #   intraday_scan.get_session() 精确控制(TAIL=14:30-14:57)
                 _n = datetime.now()
                 _m = _n.hour * 60 + _n.minute
-                if _m < 570 or _m > 930:
+                if _m < 570 or _m > 897:
                     time.sleep(60)
                     continue
 
@@ -130,6 +162,8 @@ class EngineLiveWrapper:
                 
                 # 2. 每5分钟做一次完整市场扫描
                 if time.time() - last_market_update > 300:
+                    # v14.48: 扫描前从磁盘 reload 账户 — 与计划任务并发写 sim_state 时保持一致
+                    self._sync_account_from_disk()
                     self.engine.step_market()
                     last_market_update = time.time()
                     self.log.info(f"[Live] 市场更新: {self.engine.market_regime} ({self.engine.market_score:.0f})")

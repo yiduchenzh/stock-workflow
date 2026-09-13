@@ -13,6 +13,8 @@ def composite_score(analysis, market_regime, market_score, mtf_scheme="A"):
         "momentum_breakout": 0.18, "wave_point": 0.12, "chan_buy1": 0.10,
         "chan_buy2": 0.12, "chan_sell3": 0.05, "naked_engulf": 0.08,
         "naked_insidebar": 0.08, "naked_pinbar": 0.10,
+        # v14.45+: 昨收价战法 (短线狙击手主力战法, 权重最高)
+        "prev_close_A": 0.22, "prev_close_B": 0.20,
     }
     for a in analysis:
         if not a.get("signal"): continue

@@ -24,6 +24,27 @@ logger = logging.getLogger("aurora.sim")
 DATA = Path(__file__).resolve().parent.parent / "data"
 STATE = DATA / "sim_state.json"
 TRADES = DATA / "sim_trades.json"
+
+
+def _read_json_text(path: Path) -> str:
+    """读取JSON文本 — UTF-8优先, 旧GBK文件兜底并自动迁移为UTF-8
+
+    v14.46 (2026-08-14 trades.json 持久化修复): 早期写入未显式指定编码,
+    Windows 默认写成了 GBK, 而 _load 用 UTF-8 读 → 解码失败 → trades=[] →
+    下次 _save 覆盖文件 → 历史交易记录全部丢失。
+    """
+    raw = path.read_bytes()
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    # GBK 兜底: 读到内容, 立即迁移文件为 UTF-8 (下次写入也走 encoding="utf-8")
+    text = raw.decode("gbk", errors="replace")
+    try:
+        path.write_text(text, encoding="utf-8")
+    except Exception:
+        pass
+    return text
 # 测试隔离: _test_/_fix_脚本使用隔离文件
 import inspect as _insp
 _TF = _insp.currentframe()
@@ -48,12 +69,13 @@ class SimAccount(BaseExecutor):
         self.state_path = state_path or STATE
         self.trades_path = trades_path or TRADES
         self.commission = 0.0003      # 佣金0.03%
-        self.stamp_tax = 0.001        # 印花税0.1% (仅卖出)
+        # ⭐ P0-2 修复(2026-08-21 审计): 印花税 2023-08-28 起减半=万5(卖出), 原0.1%是旧税率
+        self.stamp_tax = 0.0005       # 印花税0.05% (仅卖出, 2023-08-28后现行)
         # v14.43: 成本模型对齐hikyuu FixedA2017TradeCost — 过户费+最低佣金+按板块差异化
         self.transfer_fee = 0.00002    # 过户费0.002% (仅沪市/北交所, 深市不收)
         self.min_commission = 5.0      # 最低佣金5元 (hikyuu lowest_commission)
-        # 按板块印花税: 主板/创业/科创都收0.1%; 北交所0.05%; ETF 0
-        self.stamp_by_market = {"sz": 0.001, "sh": 0.001, "bj": 0.0005}
+        # 按板块印花税: 主板/创业/科创 万5; 北交所万5; ETF 0
+        self.stamp_by_market = {"sz": 0.0005, "sh": 0.0005, "bj": 0.0005}
         self.slippage_base = 0.001     # 基础滑点0.1%
         self.slippage_tiers = {      # 按市值分层 (Quant审计)
             500: 0.001,   # >500亿: 0.1%
@@ -62,6 +84,12 @@ class SimAccount(BaseExecutor):
         }
         self.impact_factor = 0.0001   # 冲击成本(每100万成交额+0.01%) [legacy]
         self.today_buys: dict[str, int] = {}  # A股T+1: 今日买入不可卖出
+        # ⭐ v14.49(2026-09-11) P1-2: 当日盈亏基准 + 日终总资产(周/月预算闸口径修复)
+        self.prev_total: float = float(capital)   # 加载时总资产(day_baseline 兜底用)
+        self.day_open_date: str = ""        # 当日基准日期
+        self.day_open_total: float = 0.0    # 当日基准总资产(当日首次评估时固化)
+        self.close_date: str = ""           # 最近一次日终记录日期
+        self.close_total: float = 0.0       # 该日总资产(次日作基准)
 
         # ── 微结构执行增强模块 ──
         self._use_microstructure = self.config.get("use_microstructure", True)
@@ -192,6 +220,18 @@ class SimAccount(BaseExecutor):
         if shares < 100: return {"success": False, "error": "最小100股"}
         shares = int(shares / 100) * 100
 
+        # ⭐ A股规则 (2026-08-12 合规审计): 涨停板买不进——现价≥涨停价时拒绝买入
+        #   (腾讯行情 limit_up 字段, 板块差异化已由行情端给出; 取数失败保守放行)
+        try:
+            from data.sources import get_tencent_quotes
+            _q = get_tencent_quotes([code])
+            _lu = _q.get(code, {}).get("limit_up", 0)
+            # v14.46: 行情缺失时 limit_up 可能为 0 或异常负值 — 仅当>0且现价≥涨停价才拦截
+            if _lu and _lu > 0 and price >= _lu - 1e-9:
+                return {"success": False, "error": f"涨停价{_lu:.2f}买不进(现价{price:.2f})"}
+        except Exception:
+            pass
+
         ms = self._get_micro_slippage(code, shares, price, is_buy=True)
         slippage = ms["slippage"]
         fill_price = ms["fill_price"]
@@ -285,6 +325,18 @@ class SimAccount(BaseExecutor):
         if shares < 100: return {"success": False, "error": "最小100股"}
         shares = int(shares / 100) * 100
 
+        # ⭐ A股规则 (2026-08-12 合规审计): 跌停板卖不出——现价≤跌停价时拒绝卖出
+        #   (腾讯行情 limit_down 字段; 取数失败保守放行)
+        try:
+            from data.sources import get_tencent_quotes
+            _q = get_tencent_quotes([code])
+            _ld = _q.get(code, {}).get("limit_down", 0)
+            # v14.46: 行情缺失时 limit_down 可能为 0 或异常负值 — 仅当>0且现价≤跌停价才拦截
+            if _ld and _ld > 0 and price <= _ld + 1e-9:
+                return {"success": False, "error": f"跌停价{_ld:.2f}卖不出(现价{price:.2f})"}
+        except Exception:
+            pass
+
         ms = self._get_micro_slippage(code, shares, price, is_buy=False)
         slippage = ms["slippage"]
         fill_price = ms["fill_price"]
@@ -305,9 +357,11 @@ class SimAccount(BaseExecutor):
 
         # ── 六问证据链: 关联最近买入上下文 + 归因分类 ──
         buy_ctx = {}
+        buy_reason = ""
         for t in reversed(self.trades):
             if t.get("action") == "buy" and t.get("code") == code:
                 buy_ctx = t.get("context", {}) or {}
+                buy_reason = t.get("reason", "")
                 break
         sell_cls = self.classify_sell_reason(reason)
         # 持仓天数
@@ -340,6 +394,20 @@ class SimAccount(BaseExecutor):
         }
         self.trades.append(trade)
         self._save()
+        # ⭐ v14.50 P2-A修复(2026-09-04 周复盘): 平仓时记录真实结果到strategy_evolution
+        #   原在engine买入处记 win=True/pnl=0 假数据 → 健康度胜率100%失真。
+        #   这里只记录"整仓卖出"(sell后该code不再持仓)的真实pnl, 部分减仓不算完成交易。
+        try:
+            if code not in self.positions:
+                from strategies.evolution import record_trade_result
+                from backtest.engine import get_backtest_engine
+                strategy_name = (buy_ctx or {}).get("strategy") or buy_reason or "unknown"
+                _pnl_frac = round(pnl_pct / 100.0, 4)  # 转小数(0.03=3%), 与evolution口径一致
+                record_trade_result(strategy_name, _pnl_frac, pnl > 0)
+                get_backtest_engine().update_stats(strategy_name, _pnl_frac, pnl > 0)
+                logger.info(f"[Evolve] {code} 平仓记录: strategy={strategy_name} pnl={_pnl_frac:+.2%}")
+        except Exception as _e:
+            logger.debug(f"[Evolve] {code} 平仓记录失败: {_e}")
         logger.info(f"[SIM SELL] {code} {shares}sh @{fill_price:.2f} PnL={pnl:+.0f} "
                     f"[{sell_cls['label']}]")
         return {"success": True, "trade": trade}
@@ -440,23 +508,61 @@ class SimAccount(BaseExecutor):
         p = self.state_path or STATE
         tp = self.trades_path or TRADES
         p.parent.mkdir(parents=True, exist_ok=True)
+        # v14.46: 显式 UTF-8 写入(原依赖默认编码→GBK, 读用UTF-8失败→trades加载空→覆盖丢历史)
         p.write_text(json.dumps({
             "capital": self.capital, "cash": round(self.cash, 2),
             "positions": self.positions, "total": round(self.total_value, 2),
             "today_buys": self.today_buys, "date": str(datetime.now().date()),
-        }, indent=2, ensure_ascii=False))
-        tp.write_text(json.dumps(self.trades[-500:], indent=2, ensure_ascii=False))
+            "day_open_date": self.day_open_date, "day_open_total": round(self.day_open_total, 2),
+            "close_date": self.close_date, "close_total": round(self.close_total, 2),
+        }, indent=2, ensure_ascii=False), encoding="utf-8")
+        tp.write_text(json.dumps(self.trades[-500:], indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def day_baseline(self) -> float:
+        """当日盈亏基准(总资产) — 每日首次调用固化并落盘, 同日复用.
+
+        v14.49(P1-2): 原引擎用 `prev_total`(上次保存的总资产)作日基准, 但同日每笔交易/
+        每次引擎重建都会刷新它 → daily_pnl=(current-prev_total)/prev_total ≈ 0;
+        叠加 budget "同日只记一次" → weekly_pnl 恒 1e-9 量级 → 周/月亏损闸永不触发。
+        正确基准优先级: ① 昨日日终总资产(close_total, 日期≠今天) ② 当日已固化值
+                       ③ 加载时的总资产(prev_total) ④ 本金.
+        """
+        today = str(datetime.now().date())
+        if self.day_open_date == today and self.day_open_total > 0:
+            return self.day_open_total
+        base = 0.0
+        if self.close_date and self.close_date != today and self.close_total > 0:
+            base = self.close_total
+        elif getattr(self, "prev_total", 0) and float(self.prev_total) > 0:
+            base = float(self.prev_total)
+        if base <= 0:
+            base = float(self.capital)
+        self.day_open_date = today
+        self.day_open_total = float(base)
+        self._save()
+        return float(base)
+
+    def mark_day_close(self) -> float:
+        """日终记录总资产(供次日作当日基准) — 返回记录值."""
+        self.close_date = str(datetime.now().date())
+        self.close_total = float(self.total_value)
+        self._save()
+        return self.close_total
 
     def _load(self):
         p = self.state_path or STATE
         tp = self.trades_path or TRADES
         if p.exists():
             try:
-                d = json.loads(p.read_text())
+                d = json.loads(_read_json_text(p))
                 self.cash = d.get("cash", self.capital)
                 self.positions = d.get("positions", {})
                 # v14.41: 记录加载时的总资产(昨收/上次保存), 供engine计算"今日盈亏"基准
                 self.prev_total = float(d.get("total", self.total_value))
+                self.day_open_date = str(d.get("day_open_date", "") or "")
+                self.day_open_total = float(d.get("day_open_total", 0) or 0)
+                self.close_date = str(d.get("close_date", "") or "")
+                self.close_total = float(d.get("close_total", 0) or 0)
                 saved_date = d.get("date", "")
                 today = str(datetime.now().date())
                 if saved_date != today:
@@ -467,7 +573,7 @@ class SimAccount(BaseExecutor):
                 pass
         if tp.exists():
             try:
-                self.trades = json.loads(tp.read_text()) or []
+                self.trades = json.loads(_read_json_text(tp)) or []
             except Exception:
                 self.trades = []
 

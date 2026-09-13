@@ -1,0 +1,52 @@
+[
+  {
+    "time": "2026-08-08 22:04:33",
+    "codes": [
+      "001267",
+      "002552",
+      "300319",
+      "600206",
+      "002594"
+    ],
+    "train_ratio": 0.8,
+    "adopted": {
+      "re_entry_hold": 5,
+      "re_entry_cd": 3,
+      "hold_min": 5,
+      "t0_gap_pct": 4.0,
+      "t0_amp_pct": 1.5,
+      "t0_drop_ratio": 0.3,
+      "add_vol": 1.0
+    },
+    "train_avg": 26.44,
+    "baseline_val_avg": 34.6,
+    "val_avg": 52.38,
+    "adopted_new": true,
+    "elapsed_s": 100.8
+  },
+  {
+    "time": "2026-08-08 22:14:19",
+    "codes": [
+      "001267",
+      "002552",
+      "300319",
+      "600206",
+      "002594"
+    ],
+    "train_ratio": 0.8,
+    "adopted": {
+      "re_entry_hold": 5,
+      "re_entry_cd": 3,
+      "hold_min": 5,
+      "t0_gap_pct": 4.0,
+      "t0_amp_pct": 1.5,
+      "t0_drop_ratio": 0.3,
+      "add_vol": 1.0
+    },
+    "train_avg": 28.8,
+    "baseline_val_avg": 52.38,
+    "val_avg": null,
+    "adopted_new": false,
+    "elapsed_s": 80.3
+  }
+]

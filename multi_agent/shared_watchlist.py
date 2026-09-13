@@ -30,7 +30,8 @@ class SharedWatchlist:
     def _load(self) -> dict:
         try:
             if WATCHLIST_FILE.exists():
-                d = json.loads(WATCHLIST_FILE.read_text())
+                # v14.50 P2-B: 显式utf-8
+                d = json.loads(WATCHLIST_FILE.read_text(encoding="utf-8"))
                 # TTL检查: 超过1小时的数据清空
                 if time.time() - d.get("_ts", 0) > self.ttl:
                     return {"_ts": time.time(), "stocks": {}}

@@ -3,9 +3,16 @@ import logging, numpy as np
 logger = logging.getLogger("aurora.strategies")
 _SECTOR_CACHE = {"data": None, "time": 0}
 
-def analyze_all(candidates: list, kline_override: dict = None, market_regime: str = None) -> list:
+def analyze_all(candidates: list, kline_override: dict = None, market_regime: str = None,
+                strategy_weights: dict = None) -> list:
+    """策略执行器 — 多战法信号收集+加权投票
+    v14.45+: strategy_weights 传入Agent画像权重(如短线狙击手 prev_close_A=3.0),
+             1) 多信号 → 加权平均投票, best_strat 按加权分
+             2) 单信号 → 强偏好信号(权重≥2.0)直接确认, 其余维持"不确认"(向后兼容)
+    """
     from data.sources import get_kline
     results = []
+    _SW = strategy_weights or {}
 
     # 板块轮动检测(全市场一次, 不在个股循环内)
     sector_best_code = None
@@ -65,9 +72,11 @@ def analyze_all(candidates: list, kline_override: dict = None, market_regime: st
         if mr["signal"]: signals.append(("mean_reversion", mr["score"], price))
 
         # 动量突破 v1.0 (R24新增 — 与wave_point低相关)
+        # v14.46: 权重≤0 的信号直接不收集(彻底禁用) — 短线狙击手 momentum=0(实盘0%胜率)
         from strategies.momentum_breakout import check_momentum_breakout
         mo = check_momentum_breakout(kline, market_regime)
-        if mo["signal"]: signals.append(("momentum_breakout", mo["score"], price))
+        if mo["signal"] and _SW.get("momentum_breakout", 1.0) > 0:
+            signals.append(("momentum_breakout", mo["score"], price))
 
         # 裸K四大形态信号 v2.0 (完整形态库)
         from strategies.naked_k import (
@@ -144,20 +153,48 @@ def analyze_all(candidates: list, kline_override: dict = None, market_regime: st
             pass
 
         # 昨收价极简战法信号 (v14.45: 短线专属 — 买点A挖坑转强/买点B强势延续)
+        # v14.47 (2026-08-14 账户画像审计 P1a): 权重≤0 不收集 — 只有短线狙击手 prev_close 权重>0
+        #   (修复前: 趋势/新手/价值账户无 prev_close 权重, 但信号仍收集→best_strategy 穿透)
+        # v14.46: prev_close_B 强势池护栏保留
         try:
             from strategies.prev_close_play import check_prev_close
             pc_sig = check_prev_close(kline)
             if pc_sig["signal"]:
-                signals.append(("prev_close_" + pc_sig["type"], pc_sig["score"], price))
+                _pc_type = pc_sig["type"]
+                # ⭐ 2026-08-16 P0 次级修正(runner.py:164 or 闸): 只按 prev_close_{type} 判定,
+                #   去掉 `or _SW.get("prev_close_A")` —— 否则单禁用 B(A 开) 时 B 信号也会漏穿。
+                if _SW.get("prev_close_" + _pc_type, 0) > 0:
+                    if _pc_type == "B":
+                        _g = str(c.get("strong_grade", ""))
+                        _sc = c.get("strong_score", 0) or 0
+                        if _g not in ("A", "B") and _sc < 70:
+                            logger.debug(f"[PrevClose] {code}: prev_close_B 被强势池护栏拦截 "
+                                         f"(strong_grade={_g} score={_sc})")
+                        else:
+                            signals.append(("prev_close_B", pc_sig["score"], price))
+                    else:
+                        signals.append(("prev_close_A", pc_sig["score"], price))
+                else:
+                    logger.debug(f"[PrevClose] {code}: prev_close_{_pc_type} 权重≤0, 不收集")
         except Exception as e:
             logger.debug(f"[PrevClose] {code}: {e}")
 
-        # 多战法投票 (双重确认: 需要≥2个信号)
+        # 多战法投票 (双重确认: 默认需要≥2个信号; 强偏好单信号也确认)
+        def _w(name):
+            return _SW.get(name, 1.0)
         if len(signals) >= 2:
-            weighted_score = sum(s[1] for s in signals) / len(signals) + 10
-            best_strat = max(signals, key=lambda x: x[1])[0]
+            weighted_score = sum(s[1] * _w(s[0]) for s in signals) / len(signals) + 10
+            best_strat = max(signals, key=lambda x: x[1] * _w(x[0]))[0]
+        elif len(signals) == 1:
+            # 单信号: 仅Agent强偏好(权重≥2.0)确认 — 短线狙击手 prev_close_A/B
+            name, sc, pr = signals[0]
+            if _SW.get(name, 0.0) >= 2.0:
+                best_strat = name
+                weighted_score = sc + 10
+            else:
+                best_strat = None; weighted_score = 0
         else:
-            # 单信号或0信号 → 不确认
+            # 0信号 → 不确认
             best_strat = None; weighted_score = 0
 
         results.append({

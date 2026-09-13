@@ -1,0 +1,9 @@
+{
+  "re_entry_hold": 5,
+  "re_entry_cd": 3,
+  "hold_min": 5,
+  "t0_gap_pct": 4.0,
+  "t0_amp_pct": 1.5,
+  "t0_drop_ratio": 0.3,
+  "add_vol": 1.0
+}

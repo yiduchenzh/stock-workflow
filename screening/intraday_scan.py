@@ -53,7 +53,6 @@ def already_in_engine(engine, code: str) -> bool:
 
 # ─── 早盘选股 ───
 def scan_morning(engine) -> list:
-    from data.sources import get_tencent_quotes
     from screening.cascade import cascade_screen
     from screening.strong_stock import screen_strong_stocks
     
@@ -63,11 +62,11 @@ def scan_morning(engine) -> list:
     phase = getattr(engine, 'phase', 'monitor')
     candidates = cascade_screen(engine.cfg, phase=phase) if hasattr(engine,"cfg") else []
     if not candidates: return []
-    quotes = get_tencent_quotes(candidates)
     
     signals = []
-    for code, q in quotes.items():
-        if already_in_engine(engine, code): continue
+    for q in candidates:
+        code = q.get("code","")
+        if not code or already_in_engine(engine, code): continue
         chg = q.get("change_pct",0)
         price = q.get("price",0)
         vol_ratio = q.get("vol_ratio",0)
@@ -86,7 +85,6 @@ def scan_morning(engine) -> list:
 
 # ─── 尾盘选股 ───
 def scan_tail(engine) -> list:
-    from data.sources import get_tencent_quotes
     from screening.cascade import cascade_screen
     cap = can_open_position(engine)
     if not cap["ok"]: return []
@@ -94,11 +92,11 @@ def scan_tail(engine) -> list:
     phase = getattr(engine, 'phase', 'monitor')
     candidates = cascade_screen(engine.cfg, phase=phase) if hasattr(engine,"cfg") else []
     if not candidates: return []
-    quotes = get_tencent_quotes(candidates)
     
     signals = []
-    for code, q in quotes.items():
-        if already_in_engine(engine, code): continue
+    for q in candidates:
+        code = q.get("code","")
+        if not code or already_in_engine(engine, code): continue
         chg = q.get("change_pct",0)
         price = q.get("price",0)
         turnover = q.get("turnover",0)

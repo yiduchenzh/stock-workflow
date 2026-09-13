@@ -38,14 +38,139 @@
   python prev_close_strategy.py --codes 600519,000858,601318 --years 2
   python prev_close_strategy.py --codes 600519 --years 3 --capital 200000
 """
-import sys, json, time, argparse
+import sys, json, time, argparse, os, hashlib, logging
 import urllib.request
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+# ⭐ v2.0 (2026-08-09): 完整引擎移植自 web 工程 hunter-v2 — limitup_system 与本文件同级
+_LIMITUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "limitup_system")
+if _LIMITUP_DIR not in sys.path:
+    sys.path.insert(0, _LIMITUP_DIR)
+
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
+
+# ══════════════════════════════════════════════════════════════
+# 0.1 交易成本常数（配置化, 回测买卖统一套用, 口径与 bt_full.SimAccount 一致）
+# ══════════════════════════════════════════════════════════════
+COMMISSION = 3e-4        # 佣金 万3 (双边: 买入+卖出都收)
+MIN_COMMISSION = 5.0     # 最低佣金 5元
+STAMP_TAX = 1e-3         # 印花税 千1 (仅卖出)
+TRANSFER_FEE = 2e-5      # 过户费 万0.2 (仅沪市/北交所 sh/bj, 深市不收)
+
+
+def _market_of(code: str) -> str:
+    """股票市场: sh沪市 / sz深市 / bj北交所 (92/8/4开头=北交所优先)."""
+    if code.startswith(("92", "8", "4")):
+        return "bj"
+    if code.startswith(("6", "9")):
+        return "sh"
+    return "sz"
+
+
+def _trade_cost(price: float, shares: int, is_buy: bool, code="?") -> dict:
+    """单笔交易成本 — 佣金(万3,min5) + 印花税(卖出,千1) + 过户费(沪/北,万0.2).
+    返回 {commission, stamp, transfer, total}. 与 bt_full.SimAccount 口径对齐. 买入不扣过户费可忽略手续费"""
+    notional = price * shares
+    commission = max(notional * COMMISSION, MIN_COMMISSION)
+    stamp = 0.0
+    if not is_buy:
+        stamp = notional * STAMP_TAX
+    transfer = 0.0
+    if _market_of(str(code)) in ("sh", "bj"):
+        transfer = notional * TRANSFER_FEE
+    total = commission + stamp + transfer
+    return {"commission": commission, "stamp": stamp, "transfer": transfer, "total": total}
+
+
+# ══════════════════════════════════════════════════════════════
+# 0. 结果级缓存（复用 data.result_cache 的 ResultCache + make_bt_key, 勿重造）
+# ══════════════════════════════════════════════════════════════
+# 作用对象是 4 个核心回测函数的返回 dict, 而非K线数据。
+# 同参(K线数据不变 + 参数不变)二次回测直接命中缓存返回, 不再拉数据/重算。
+# 缓存 key 由函数全部决定性参数 + df 轻指纹(代码/根数/首末日期/收盘和)生成,
+# 任一参数或数据段变动 => key 变化 => 自动 MISSED 重跑, 无需手动清缓存。
+# BUST_CACHE=True 时强制忽略已有缓存、全量重算并覆写(显式失效)。
+CACHE_ENABLED = True
+BUST_CACHE = False
+
+from data.result_cache import ResultCache, make_bt_key  # noqa: E402
+# 独立缓存文件, 不与 bt_full.py 共用 data/bt_result_cache.json
+_PREV_CACHE = ResultCache(Path(__file__).resolve().parent / "data" / "prevclose_result_cache.json")
+
+
+def _df_fingerprint(df: pd.DataFrame) -> str:
+    """K线内容指纹: `code:code|n:N|d0..d1|md5:S`。
+
+    key = 代码 + 根数 + 首末日期(人类可读前缀) + **OHLCV 逐行内容 MD5**。
+    修复(2026-08-14, P1): 旧版用"收盘和"做签名可碰撞——内部分布不同但收盘和相同
+    (如 [10,11] vs [11,10] 和均为 21)会误命中旧缓存返回错结果(复权/盘后更新改内部分布
+    但和可能不变)。升级为对 open/high/low/close/volume 逐行序列做 MD5(numpy tobytes
+    保留行序), 内部分布一变 md5 即变 → key 变 → 正确 MISS。几百行 K 线 md5 极轻量。
+    """
+    code = df.attrs.get("code", "?") if isinstance(df.attrs, dict) else "?"
+    n = len(df)
+    if n == 0:
+        return f"code:{code}|empty"
+    try:
+        d0 = str(pd.to_datetime(df["date"].iloc[0]))[:10]
+        d1 = str(pd.to_datetime(df["date"].iloc[-1]))[:10]
+        # 逐行内容哈希: 转 float 按行序 tobytes, 保留内部顺序分布
+        arr = df[["open", "high", "low", "close", "volume"]].to_numpy(dtype=float, copy=False)
+        s = hashlib.md5(np.ascontiguousarray(arr).tobytes()).hexdigest()[:16]
+        return f"code:{code}|n:{n}|{d0}..{d1}|md5:{s}"
+    except Exception:
+        return f"code:{code}|n:{n}|nomd5"
+
+
+def _json_safe(value):
+    """把回测返回 dict 递归归一化为 JSON 可序列化结构。
+
+    equity_curve 里的 pd.Timestamp/tuple、trades 里的 numpy 标量 均非 JSON 可序列化,
+    落盘前统一归一化(Timestamp→iso字符串, tuple→list, numpy→python原生)。
+    """
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
+    if isinstance(value, np.ndarray):
+        return [_json_safe(v) for v in value.tolist()]
+    return value
+
+
+def _rehydrate_result(cached: dict) -> dict:
+    """把从磁盘读回的 JSON 结果恢复为与原回测返回结构一致(用于 HIT 路径)。
+
+    仅 equity_curve 的 (Timestamp,float) 元组在 JSON 往返中变为 [str,float] 列表,
+    需要还原为 (pd.Timestamp,float) 元组; trades 的 str/float 原样保留即可
+    (numpy float 与 python float 数值相等, == 成立)。
+    """
+    out = dict(cached)
+    ec = cached.get("equity_curve")
+    if isinstance(ec, list):
+        restored = []
+        for entry in ec:
+            if isinstance(entry, (list, tuple)) and len(entry) == 2:
+                restored.append((pd.Timestamp(str(entry[0])), float(entry[1])))
+            else:
+                restored.append(entry)
+        out["equity_curve"] = restored
+    return out
+
 
 
 # ══════════════════════════════════════════════════════════════
@@ -91,6 +216,47 @@ def fetch_kline(code: str, days: int = 500, tf: str = "day") -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════════
 # 2. 信号生成（昨收价四态 + 两类买点）
 # ══════════════════════════════════════════════════════════════
+
+# ──────────────────────────────────────────────────────────────
+# 2.0 自动买入模式选择 (P0-② 2026-08-16): 按标的波动/趋势特征自动选
+#     'same_close'(当日收盘买, 吃隔夜跳空) vs 'next_open'(次日开盘买, 避免追高).
+#     实证(技能库): 趋势票(001267)当日收盘买>次日开盘买(吃隔夜跳空);
+#                   震荡票(300319/600206)次日开盘买>当日追涨(避免追高).
+#     判定: 高波动(ATR%≥2.5) 且 强趋势(近20日上涨占比+净涨幅得分) → same_close;
+#           否则 → next_open。
+# ──────────────────────────────────────────────────────────────
+def _auto_entry_mode(df: pd.DataFrame) -> str:
+    """按标的波动/趋势特征自动选买入模式 ('same_close' / 'next_open')。
+
+    用纯K线可观测因子(无未来函数): 近20日 ATR% + 近20日趋势一致性。
+    """
+    if df is None or len(df) < 30:
+        return "next_open"   # 数据不足 → 保守次日开盘买
+    try:
+        c = df["close"].astype(float).values
+        h = df["high"].astype(float).values
+        lo = df["low"].astype(float).values
+        o = df["open"].astype(float).values
+        # 近20日 ATR% (真实波幅平均率)
+        prev_c = np.concatenate(([c[0]], c[:-1]))
+        tr = np.maximum(h - lo, np.maximum(np.abs(h - prev_c), np.abs(lo - prev_c)))
+        atr = float(tr[-20:].mean())
+        atr_pct = atr / float(c[-1]) * 100 if c[-1] else 0.0
+        # 近20日趋势: 上涨天数占比 + 累计涨幅
+        if len(c) >= 21:
+            rets = np.diff(c[-21:]) / np.maximum(c[-21:-1], 1e-9)
+        else:
+            rets = np.diff(c) / np.maximum(c[:-1], 1e-9)
+        up_ratio = float((rets > 0).mean())
+        chg20 = (float(c[-1]) / float(c[-21]) - 1.0) * 100 if len(c) >= 21 and c[-21] else 0.0
+        trend_score = up_ratio * 50 + min(max(chg20, -20), 40)
+        # 高波动(波动大能吃到隔夜跳空) + 强趋势(追高有延续) → 当日收盘买
+        if atr_pct >= 2.5 and trend_score >= 25:
+            return "same_close"
+        return "next_open"
+    except Exception:
+        return "next_open"
+
 
 def generate_signals(df: pd.DataFrame) -> pd.DataFrame:
     """基于昨收价生成信号:
@@ -146,6 +312,23 @@ def backtest_single(df: pd.DataFrame, capital: float = 100_000,
       same_close — 信号当日收盘价买入(忠实原文"回踩昨收低吸"的日内操作)
     同一时间只持有一个仓位(有持仓时新信号忽略)
     """
+    _fn = "backtest_single"
+    # ---- 结果级缓存: 命中直接返回, 避免同参重算 ----
+    key = None
+    if CACHE_ENABLED:
+        key = make_bt_key({
+            "mode": "single", "capital": capital, "max_hold": max_hold,
+            "stop_pct": stop_pct, "entry_mode": entry_mode,
+            "fingerprint": _df_fingerprint(df),
+        })
+        if not BUST_CACHE:
+            cached = _PREV_CACHE.get(key)
+            if cached is not None:
+                print(f"[Cache] HIT {_fn} key={key} (命中磁盘缓存, ~0s)")
+                return _rehydrate_result(cached)
+            print(f"[Cache] MISSED {_fn} key={key}")
+        else:
+            print(f"[Cache] BUST {_fn} key={key} (强制重算并覆写)")
     trades = []
     equity_curve = []   # (date, equity)
     cash = capital
@@ -164,8 +347,9 @@ def backtest_single(df: pd.DataFrame, capital: float = 100_000,
         if pos is not None and pos.get("pending_exit"):
             reason = pos.pop("pending_exit")
             sell_px = open_px
-            proceeds = sell_px * pos["shares"]
-            pnl = proceeds - pos["cost"]
+            sell_cst = _trade_cost(sell_px, pos["shares"], is_buy=False, code=df.attrs.get("code", "?"))
+            net_proceeds = sell_px * pos["shares"] - sell_cst["total"]
+            pnl = net_proceeds - pos["cost"]
             pnl_pct = pnl / pos["cost"] * 100
             trades.append({
                 "code": df.attrs.get("code", "?"),
@@ -175,12 +359,13 @@ def backtest_single(df: pd.DataFrame, capital: float = 100_000,
                 "exit_price": round(sell_px, 3),
                 "hold_days": i - pos["entry_idx"],
                 "pnl": round(pnl, 2),
+                "fee": round(sell_cst["total"], 2),
                 "pnl_pct": round(pnl_pct, 2),
                 "signal": pos["signal"],
                 "pattern": pos["pattern"],
                 "exit_reason": reason,
             })
-            cash += proceeds  # 累加(保留买入后剩余现金, 不覆盖)
+            cash += net_proceeds  # 累加(保留买入后剩余现金, 不覆盖)
             pos = None
 
         # ── ② 收盘判断: 是否触发离场（标记, 次日开盘执行）──
@@ -213,14 +398,15 @@ def backtest_single(df: pd.DataFrame, capital: float = 100_000,
             if shares < 100:
                 continue
             sig_i = i if entry_mode == "same_close" else i - 1
+            buy_cst = _trade_cost(buy_px, shares, is_buy=True, code=df.attrs.get("code", "?"))
             pos = {
                 "entry_date": pd.Timestamp(date), "entry_price": buy_px,
-                "shares": shares, "cost": buy_px * shares,
+                "shares": shares, "cost": buy_px * shares + buy_cst["total"],
                 "entry_idx": i,
                 "signal": "A" if df["signal_A"].iloc[sig_i] else "B",
                 "pattern": df["pattern"].iloc[sig_i],
             }
-            cash -= buy_px * shares  # 只扣实际买入花费(剩余现金保留)
+            cash -= buy_px * shares + buy_cst["total"]  # 扣买入花费+佣金(剩余现金保留)
 
         # ── 每日权益记录: 现金 + 持仓市值(单口径, 不重复计算) ──
         cur_equity = cash + (pos["shares"] * close_px if pos else 0)
@@ -229,8 +415,9 @@ def backtest_single(df: pd.DataFrame, capital: float = 100_000,
     # 期末强制平仓
     if pos is not None:
         last_px = closes[-1]
-        proceeds = last_px * pos["shares"]
-        pnl = proceeds - pos["cost"]
+        sell_cst = _trade_cost(last_px, pos["shares"], is_buy=False, code=df.attrs.get("code", "?"))
+        net_proceeds = last_px * pos["shares"] - sell_cst["total"]
+        pnl = net_proceeds - pos["cost"]
         trades.append({
             "code": df.attrs.get("code", "?"),
             "entry_date": str(pos["entry_date"])[:10],
@@ -239,19 +426,24 @@ def backtest_single(df: pd.DataFrame, capital: float = 100_000,
             "exit_price": round(last_px, 3),
             "hold_days": len(df) - 1 - pos["entry_idx"],
             "pnl": round(pnl, 2),
+            "fee": round(sell_cst["total"], 2),
             "pnl_pct": round(pnl / pos["cost"] * 100, 2),
             "signal": pos["signal"],
             "pattern": pos["pattern"],
             "exit_reason": "period_end",
         })
-        cash += proceeds  # 累加(期末平仓同理)
+        cash += net_proceeds  # 累加(期末平仓同理)
 
-    return {
+    result = {
         "trades": trades,
         "equity_curve": equity_curve,
         "final_equity": round(cash, 2),
         "capital": capital,
     }
+    if CACHE_ENABLED and key is not None:
+        _PREV_CACHE.set(key, _json_safe(result))
+        print(f"[Cache] SET {_fn} key={key} 已写入磁盘缓存")
+    return result
 
 
 # ══════════════════════════════════════════════════════════════
@@ -268,6 +460,22 @@ def backtest_minute(df: pd.DataFrame, capital: float = 100_000,
     - 防骗线: 短暂穿越(<15分钟)不做决策
     bars_per_day: 16=15分钟bar(4小时交易), 48=5分钟bar
     """
+    _fn = "backtest_minute"
+    # ---- 结果级缓存 ----
+    key = None
+    if CACHE_ENABLED:
+        key = make_bt_key({
+            "mode": "minute", "capital": capital, "bars_per_day": bars_per_day,
+            "stop_pct": stop_pct, "fingerprint": _df_fingerprint(df),
+        })
+        if not BUST_CACHE:
+            cached = _PREV_CACHE.get(key)
+            if cached is not None:
+                print(f"[Cache] HIT {_fn} key={key} (命中磁盘缓存, ~0s)")
+                return _rehydrate_result(cached)
+            print(f"[Cache] MISSED {_fn} key={key}")
+        else:
+            print(f"[Cache] BUST {_fn} key={key} (强制重算并覆写)")
     trades = []
     equity_curve = []
     cash = capital
@@ -303,6 +511,7 @@ def backtest_minute(df: pd.DataFrame, capital: float = 100_000,
     pending_buy = None   # 买点触发, 待下一bar确认
     break_start = -1     # 跌破昨收起始bar(用于15分钟判定)
     breach_dur = 0       # 持续破位bar数
+    just_exited = False  # 本bar是否刚执行离场(避免同一开盘价即时再买)
 
     for i in range(n):
         pc = prev_close_map.get(i)
@@ -312,69 +521,59 @@ def backtest_minute(df: pd.DataFrame, capital: float = 100_000,
         d = pd.Timestamp(dates[i])
         o, c, l, h, v = opens[i], closes[i], lows[i], highs[i], vols[i]
 
-        # ── 持仓中的离场判断: 放量有效跌破昨收+15分钟不收回 ──
-        if pos is not None:
+        # ── ① 先执行上一bar收盘触发的离场(今日开盘价卖出, 无未来函数) ──
+        if pos is not None and pos.get("pending_exit"):
+            reason = pos.pop("pending_exit")
+            sell_cst = _trade_cost(o, pos["shares"], is_buy=False, code=df.attrs.get("code", "?"))
+            net_proceeds = o * pos["shares"] - sell_cst["total"]
+            pnl = net_proceeds - pos["cost"]
+            pnl_pct = pnl / pos["cost"] * 100
+            trades.append({
+                "code": df.attrs.get("code", "?"),
+                "entry_date": str(pos["entry_date"])[:16],
+                "entry_price": round(pos["entry_price"], 3),
+                "exit_date": str(d)[:16],
+                "exit_price": round(o, 3),
+                "hold_bars": i - pos["entry_idx"],
+                "pnl": round(pnl, 2),
+                "fee": round(sell_cst["total"], 2),
+                "pnl_pct": round(pnl_pct, 2),
+                "signal": pos["signal"],
+                "exit_reason": reason,
+            })
+            cash += net_proceeds
+            pos = None
+            breach_dur = 0
+            just_exited = True
+
+        # ── ② 收盘判定破位/止损: 仅标记 pending, 下一bar开盘执行(不偷看本bar开盘) ──
+        if pos is not None and not pos.get("pending_exit"):
+            # 破位离场: 放量有效跌破昨收+15分钟不收回(原文"15分钟无法收回"的保守近似)
             if c < pc:
                 breach_dur += 1
             else:
                 breach_dur = 0
-            if breach_dur >= 2:  # 2根15分钟≈30分钟持续在昨收下(原文"15分钟无法收回"保守近似)
-                # 且非缩量(放量破位确认)
-                if v >= pos.get("avg_vol", 1):
-                    proceeds = o * pos["shares"]
-                    pnl = proceeds - pos["cost"]
-                    pnl_pct = pnl / pos["cost"] * 100
-                    trades.append({
-                        "code": df.attrs.get("code", "?"),
-                        "entry_date": str(pos["entry_date"])[:16],
-                        "entry_price": round(pos["entry_price"], 3),
-                        "exit_date": str(d)[:16],
-                        "exit_price": round(o, 3),
-                        "hold_bars": i - pos["entry_idx"],
-                        "pnl": round(pnl, 2),
-                        "pnl_pct": round(pnl_pct, 2),
-                        "signal": pos["signal"],
-                        "exit_reason": "break_prev_close",
-                    })
-                    cash += proceeds
-                    pos = None
-                    breach_dur = 0
-                    continue
-            # 硬止损
-            if pos is not None and c < pos["entry_price"] * (1 - stop_pct):
-                proceeds = o * pos["shares"]
-                pnl = proceeds - pos["cost"]
-                trades.append({
-                    "code": df.attrs.get("code", "?"),
-                    "entry_date": str(pos["entry_date"])[:16],
-                    "entry_price": round(pos["entry_price"], 3),
-                    "exit_date": str(d)[:16],
-                    "exit_price": round(o, 3),
-                    "hold_bars": i - pos["entry_idx"],
-                    "pnl": round(pnl, 2),
-                    "pnl_pct": round(pnl / pos["cost"] * 100, 2),
-                    "signal": pos["signal"],
-                    "exit_reason": "hard_stop",
-                })
-                cash += proceeds
-                pos = None
-                breach_dur = 0
-                continue
+            if breach_dur >= 2 and v >= pos.get("avg_vol", 1):
+                pos["pending_exit"] = "break_prev_close"
+            # 硬止损: 收盘 < 买入价×(1-stop)
+            elif c < pos["entry_price"] * (1 - stop_pct):
+                pos["pending_exit"] = "hard_stop"
 
-        # ── 买点A: 挖坑转强 (跌破昨收 → 10分钟内收回站稳) ──
-        if pos is None:
+        # ── ③ 开仓(仅当无持仓, 且本bar未刚离场, 避免同一开盘价即时再买) ──
+        if pos is None and not just_exited:
             if pending_buy:
                 # 已触发买点A, 检查收回确认(当前bar站回昨收上方)
                 if c > pc:
                     buy_px = c  # 收回瞬间价(近似)
                     shares = int(cash * 0.98 / buy_px / 100) * 100
                     if shares >= 100:
+                        buy_cst = _trade_cost(buy_px, shares, is_buy=True, code=df.attrs.get("code", "?"))
                         pos = {
                             "entry_date": d, "entry_price": buy_px, "shares": shares,
-                            "cost": buy_px * shares, "entry_idx": i, "signal": "A",
+                            "cost": buy_px * shares + buy_cst["total"], "entry_idx": i, "signal": "A",
                             "avg_vol": np.mean(vols[max(0, i - bars_per_day * 5):i]),
                         }
-                        cash -= buy_px * shares
+                        cash -= buy_px * shares + buy_cst["total"]
                     pending_buy = None
                 elif i - pending_buy > bars_per_day:  # 超过1天未收回, 放弃
                     pending_buy = None
@@ -382,23 +581,27 @@ def backtest_minute(df: pd.DataFrame, capital: float = 100_000,
                 pending_buy = i
             elif o >= pc and h > pc and c > pc:  # 买点B: 站稳开盘+收阳
                 if v >= 1.2 * np.mean(vols[max(0, i - bars_per_day * 5):i]) if i > bars_per_day else True:
-                    buy_px = c
-                    shares = int(cash * 0.98 / buy_px / 100) * 100
-                    if shares >= 100:
-                        pos = {
-                            "entry_date": d, "entry_price": buy_px, "shares": shares,
-                            "cost": buy_px * shares, "entry_idx": i, "signal": "B",
-                            "avg_vol": np.mean(vols[max(0, i - bars_per_day * 5):i]),
-                        }
-                        cash -= buy_px * shares
+                        buy_px = c
+                        shares = int(cash * 0.98 / buy_px / 100) * 100
+                        if shares >= 100:
+                            buy_cst = _trade_cost(buy_px, shares, is_buy=True, code=df.attrs.get("code", "?"))
+                            pos = {
+                                "entry_date": d, "entry_price": buy_px, "shares": shares,
+                                "cost": buy_px * shares + buy_cst["total"], "entry_idx": i, "signal": "B",
+                                "avg_vol": np.mean(vols[max(0, i - bars_per_day * 5):i]),
+                            }
+                            cash -= buy_px * shares + buy_cst["total"]
 
         cur_equity = cash + (pos["shares"] * c if pos else 0)
         equity_curve.append((pd.Timestamp(dates[i]), round(cur_equity, 2)))
+        just_exited = False
 
     # 期末平仓
     if pos is not None:
-        proceeds = closes[-1] * pos["shares"]
-        pnl = proceeds - pos["cost"]
+        last_px = closes[-1]
+        sell_cst = _trade_cost(last_px, pos["shares"], is_buy=False, code=df.attrs.get("code", "?"))
+        net_proceeds = last_px * pos["shares"] - sell_cst["total"]
+        pnl = net_proceeds - pos["cost"]
         trades.append({
             "code": df.attrs.get("code", "?"),
             "entry_date": str(pos["entry_date"])[:16],
@@ -407,18 +610,23 @@ def backtest_minute(df: pd.DataFrame, capital: float = 100_000,
             "exit_price": round(closes[-1], 3),
             "hold_bars": n - 1 - pos["entry_idx"],
             "pnl": round(pnl, 2),
+            "fee": round(sell_cst["total"], 2),
             "pnl_pct": round(pnl / pos["cost"] * 100, 2),
             "signal": pos["signal"],
             "exit_reason": "period_end",
         })
-        cash += proceeds
+        cash += net_proceeds
 
-    return {
+    result = {
         "trades": trades,
         "equity_curve": equity_curve,
         "final_equity": round(cash, 2),
         "capital": capital,
     }
+    if CACHE_ENABLED and key is not None:
+        _PREV_CACHE.set(key, _json_safe(result))
+        print(f"[Cache] SET {_fn} key={key} 已写入磁盘缓存")
+    return result
 
 
 # ══════════════════════════════════════════════════════════════
@@ -539,6 +747,24 @@ def backtest_multitf(df_m1: pd.DataFrame, df_m15: pd.DataFrame,
       - 开盘强势/震荡: 两买点均可
       - 板块联动(require_sector=True): 个股板块涨幅>0才做多
     """
+    _fn = "backtest_multitf"
+    # ---- 结果级缓存（三周期 df 均纳入指纹, sector_map 纳入参数） ----
+    key = None
+    if CACHE_ENABLED:
+        key = make_bt_key({
+            "mode": "multitf", "capital": capital, "stop_pct": stop_pct,
+            "require_sector": require_sector, "sector_map": sector_map,
+            "fp_m1": _df_fingerprint(df_m1), "fp_m15": _df_fingerprint(df_m15),
+            "fp_day": _df_fingerprint(daily),
+        })
+        if not BUST_CACHE:
+            cached = _PREV_CACHE.get(key)
+            if cached is not None:
+                print(f"[Cache] HIT {_fn} key={key} (命中磁盘缓存, ~0s)")
+                return _rehydrate_result(cached)
+            print(f"[Cache] MISSED {_fn} key={key}")
+        else:
+            print(f"[Cache] BUST {_fn} key={key} (强制重算并覆写)")
     trades = []
     equity_curve = []
     cash = capital
@@ -588,6 +814,7 @@ def backtest_multitf(df_m1: pd.DataFrame, df_m15: pd.DataFrame,
 
     pending_buy = None
     breach_dur = 0
+    just_exited = False  # 本bar是否刚执行离场(避免同一开盘价即时再买)
 
     for i in range(n):
         inf = info.get(i)
@@ -606,66 +833,57 @@ def backtest_multitf(df_m1: pd.DataFrame, df_m15: pd.DataFrame,
         else:
             sector_ok = True
 
-        # ── 离场: 放量有效跌破昨收+15分钟不收回 ──
-        if pos is not None:
+        # ── ① 先执行上一bar收盘触发的离场(今日开盘价卖出, 无未来函数) ──
+        if pos is not None and pos.get("pending_exit"):
+            reason = pos.pop("pending_exit")
+            sell_cst = _trade_cost(o, pos["shares"], is_buy=False, code=df_m15.attrs.get("code", "?"))
+            net_proceeds = o * pos["shares"] - sell_cst["total"]
+            pnl = net_proceeds - pos["cost"]
+            pnl_pct = pnl / pos["cost"] * 100
+            trades.append({
+                "code": df_m15.attrs.get("code", "?"),
+                "entry_date": str(pos["entry_date"])[:16],
+                "entry_price": round(pos["entry_price"], 3),
+                "exit_date": str(d)[:16],
+                "exit_price": round(o, 3),
+                "hold_bars": i - pos["entry_idx"],
+                "pnl": round(pnl, 2),
+                "fee": round(sell_cst["total"], 2),
+                "pnl_pct": round(pnl_pct, 2),
+                "signal": pos["signal"],
+                "exit_reason": reason,
+                "pos_level": pos_lvl, "bias": bias,
+            })
+            cash += net_proceeds
+            pos = None
+            breach_dur = 0
+            just_exited = True
+
+        # ── ② 收盘判定破位/止损: 仅标记 pending, 下一bar开盘执行(不偷看本bar开盘) ──
+        if pos is not None and not pos.get("pending_exit"):
             if c < pc:
                 breach_dur += 1
             else:
                 breach_dur = 0
             if breach_dur >= 2 and v >= pos.get("avg_vol", 1):
-                proceeds = o * pos["shares"]
-                pnl = proceeds - pos["cost"]
-                trades.append({
-                    "code": df_m15.attrs.get("code", "?"),
-                    "entry_date": str(pos["entry_date"])[:16],
-                    "entry_price": round(pos["entry_price"], 3),
-                    "exit_date": str(d)[:16],
-                    "exit_price": round(o, 3),
-                    "hold_bars": i - pos["entry_idx"],
-                    "pnl": round(pnl, 2),
-                    "pnl_pct": round(pnl / pos["cost"] * 100, 2),
-                    "signal": pos["signal"],
-                    "exit_reason": "break_prev_close",
-                    "pos_level": pos_lvl, "bias": bias,
-                })
-                cash += proceeds
-                pos = None
-                breach_dur = 0
-                continue
-            if c < pos["entry_price"] * (1 - stop_pct):
-                proceeds = o * pos["shares"]
-                pnl = proceeds - pos["cost"]
-                trades.append({
-                    "code": df_m15.attrs.get("code", "?"),
-                    "entry_date": str(pos["entry_date"])[:16],
-                    "entry_price": round(pos["entry_price"], 3),
-                    "exit_date": str(d)[:16],
-                    "exit_price": round(o, 3),
-                    "hold_bars": i - pos["entry_idx"],
-                    "pnl": round(pnl, 2),
-                    "pnl_pct": round(pnl / pos["cost"] * 100, 2),
-                    "signal": pos["signal"],
-                    "exit_reason": "hard_stop",
-                    "pos_level": pos_lvl, "bias": bias,
-                })
-                cash += proceeds
-                pos = None
-                breach_dur = 0
-                continue
+                pos["pending_exit"] = "break_prev_close"
+            elif c < pos["entry_price"] * (1 - stop_pct):
+                pos["pending_exit"] = "hard_stop"
 
-        # ── 买点A: 挖坑转强(跌破昨收→收回) — 所有位置/基调均允许 ──
-        if pos is None and sector_ok:
+        # ── ③ 买点A/B(仅当无持仓, 且本bar未刚离场, 避免同一开盘价即时再买) ──
+        if pos is None and not just_exited and sector_ok:
             if pending_buy:
                 if c > pc:
                     buy_px = c
                     shares = int(cash * 0.98 / buy_px / 100) * 100
                     if shares >= 100:
+                        buy_cst = _trade_cost(buy_px, shares, is_buy=True, code=df_m15.attrs.get("code", "?"))
                         pos = {
                             "entry_date": d, "entry_price": buy_px, "shares": shares,
-                            "cost": buy_px * shares, "entry_idx": i, "signal": "A",
+                            "cost": buy_px * shares + buy_cst["total"], "entry_idx": i, "signal": "A",
                             "avg_vol": np.mean(vols[max(0, i - 80):i]),
                         }
-                        cash -= buy_px * shares
+                        cash -= buy_px * shares + buy_cst["total"]
                     pending_buy = None
                 elif i - pending_buy > 16:
                     pending_buy = None
@@ -678,19 +896,23 @@ def backtest_multitf(df_m1: pd.DataFrame, df_m15: pd.DataFrame,
                     buy_px = c
                     shares = int(cash * 0.98 / buy_px / 100) * 100
                     if shares >= 100:
+                        buy_cst = _trade_cost(buy_px, shares, is_buy=True, code=df_m15.attrs.get("code", "?"))
                         pos = {
                             "entry_date": d, "entry_price": buy_px, "shares": shares,
-                            "cost": buy_px * shares, "entry_idx": i, "signal": "B",
+                            "cost": buy_px * shares + buy_cst["total"], "entry_idx": i, "signal": "B",
                             "avg_vol": avg_v,
                         }
-                        cash -= buy_px * shares
+                        cash -= buy_px * shares + buy_cst["total"]
 
         cur_equity = cash + (pos["shares"] * c if pos else 0)
         equity_curve.append((pd.Timestamp(dates[i]), round(cur_equity, 2)))
+        just_exited = False
 
     if pos is not None:
-        proceeds = closes[-1] * pos["shares"]
-        pnl = proceeds - pos["cost"]
+        last_px = closes[-1]
+        sell_cst = _trade_cost(last_px, pos["shares"], is_buy=False, code=df_m15.attrs.get("code", "?"))
+        net_proceeds = last_px * pos["shares"] - sell_cst["total"]
+        pnl = net_proceeds - pos["cost"]
         trades.append({
             "code": df_m15.attrs.get("code", "?"),
             "entry_date": str(pos["entry_date"])[:16],
@@ -699,19 +921,24 @@ def backtest_multitf(df_m1: pd.DataFrame, df_m15: pd.DataFrame,
             "exit_price": round(closes[-1], 3),
             "hold_bars": n - 1 - pos["entry_idx"],
             "pnl": round(pnl, 2),
+            "fee": round(sell_cst["total"], 2),
             "pnl_pct": round(pnl / pos["cost"] * 100, 2),
             "signal": pos["signal"],
             "exit_reason": "period_end",
             "pos_level": "?", "bias": "?",
         })
-        cash += proceeds
+        cash += net_proceeds
 
-    return {
+    result = {
         "trades": trades,
         "equity_curve": equity_curve,
         "final_equity": round(cash, 2),
         "capital": capital,
     }
+    if CACHE_ENABLED and key is not None:
+        _PREV_CACHE.set(key, _json_safe(result))
+        print(f"[Cache] SET {_fn} key={key} 已写入磁盘缓存")
+    return result
 
 
 # ══════════════════════════════════════════════════════════════
@@ -728,6 +955,24 @@ def backtest_portfolio(sig_dfs: dict, capital: float = 1_000_000,
     - 离场: 各标的独立(跌破昨收/硬止损/超期)
     sig_dfs: {code: 已加信号列的DataFrame}
     """
+    _fn = "backtest_portfolio"
+    # ---- 结果级缓存（每只标的 code+指纹, 组合投资 share 独立） ----
+    key = None
+    if CACHE_ENABLED:
+        pf_fp = {str(code): _df_fingerprint(df) for code, df in sig_dfs.items()}
+        key = make_bt_key({
+            "mode": "portfolio", "capital": capital, "max_positions": max_positions,
+            "stop_pct": stop_pct, "entry_mode": entry_mode,
+            "portfolio_fp": pf_fp,
+        })
+        if not BUST_CACHE:
+            cached = _PREV_CACHE.get(key)
+            if cached is not None:
+                print(f"[Cache] HIT {_fn} key={key} (命中磁盘缓存, ~0s)")
+                return _rehydrate_result(cached)
+            print(f"[Cache] MISSED {_fn} key={key}")
+        else:
+            print(f"[Cache] BUST {_fn} key={key} (强制重算并覆写)")
     trades = []
     # 按日期推进: 合并所有标的的交易日历
     all_dates = sorted(set().union(*[set(df["date"].values) for df in sig_dfs.values()]))
@@ -761,8 +1006,9 @@ def backtest_portfolio(sig_dfs: dict, capital: float = 1_000_000,
             if pos.get("pending_exit"):
                 # 今日开盘卖出
                 sell_px = bar["open"]
-                proceeds = sell_px * pos["shares"]
-                pnl = proceeds - pos["cost"]
+                sell_cst = _trade_cost(sell_px, pos["shares"], is_buy=False, code=code)
+                net_proceeds = sell_px * pos["shares"] - sell_cst["total"]
+                pnl = net_proceeds - pos["cost"]
                 trades.append({
                     "code": code,
                     "entry_date": str(pos["entry_date"])[:10],
@@ -771,11 +1017,12 @@ def backtest_portfolio(sig_dfs: dict, capital: float = 1_000_000,
                     "exit_price": round(sell_px, 3),
                     "hold_days": di - pos["entry_idx"],
                     "pnl": round(pnl, 2),
+                    "fee": round(sell_cst["total"], 2),
                     "pnl_pct": round(pnl / pos["cost"] * 100, 2),
                     "signal": pos["signal"],
                     "exit_reason": pos["pending_exit"],
                 })
-                cash += proceeds
+                cash += net_proceeds
                 del positions[code]
                 continue
             # 收盘判断离场
@@ -816,7 +1063,8 @@ def backtest_portfolio(sig_dfs: dict, capital: float = 1_000_000,
             shares = int(budget / buy_px / 100) * 100
             if shares < 100 or budget < buy_px * 100:
                 continue
-            cost = buy_px * shares
+            buy_cst = _trade_cost(buy_px, shares, is_buy=True, code=code)
+            cost = buy_px * shares + buy_cst["total"]
             if cost > cash:
                 continue
             positions[code] = {
@@ -838,28 +1086,35 @@ def backtest_portfolio(sig_dfs: dict, capital: float = 1_000_000,
     for code, pos in list(positions.items()):
         last_bar = data[code].get(date_list[-1])
         if last_bar:
-            proceeds = last_bar["close"] * pos["shares"]
-            pnl = proceeds - pos["cost"]
+            last_px = last_bar["close"]
+            sell_cst = _trade_cost(last_px, pos["shares"], is_buy=False, code=code)
+            net_proceeds = last_px * pos["shares"] - sell_cst["total"]
+            pnl = net_proceeds - pos["cost"]
             trades.append({
                 "code": code,
                 "entry_date": str(pos["entry_date"])[:10],
                 "entry_price": round(pos["entry_price"], 3),
                 "exit_date": date_list[-1],
-                "exit_price": round(last_bar["close"], 3),
+                "exit_price": round(last_px, 3),
                 "hold_days": len(date_list) - 1 - pos["entry_idx"],
                 "pnl": round(pnl, 2),
+                "fee": round(sell_cst["total"], 2),
                 "pnl_pct": round(pnl / pos["cost"] * 100, 2),
                 "signal": pos["signal"],
                 "exit_reason": "period_end",
             })
-            cash += proceeds
+            cash += net_proceeds
 
-    return {
+    result = {
         "trades": trades,
         "equity_curve": equity_curve,
         "final_equity": round(cash, 2),
         "capital": capital,
     }
+    if CACHE_ENABLED and key is not None:
+        _PREV_CACHE.set(key, _json_safe(result))
+        print(f"[Cache] SET {_fn} key={key} 已写入磁盘缓存")
+    return result
 
 
 def performance(result: dict) -> dict:
@@ -934,17 +1189,156 @@ def format_report(perf: dict, code: str = "") -> str:
 # 5. 主流程
 # ══════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════
+# 5.1 完整引擎（v2.0 — web 工程 hunter-v2 移植, 2026-08-09）
+# ══════════════════════════════════════════════════════════════
+
+def fetch_min5(code: str, max_bars: int = 20000) -> dict:
+    """mootdx 直拉 5分钟K历史（覆盖约1.75年, 2.4s/只），按日分组升序。
+
+    frequency=0（5分钟）；vol 手×100 转股。返回 {day_str: [5分K序列]}。
+    （与 web 版 limitup_backtest._fetch_min5 同实现）
+    """
+    from mootdx.quotes import Quotes
+    client = Quotes.factory(market="std")
+    merged = {}
+    start = 0
+    while len(merged) < max_bars:
+        bars = client.bars(symbol=code, frequency=0, start=start, offset=800)
+        if bars is None or len(bars) == 0:
+            break
+        for _, row in bars.iterrows():
+            day = str(row.get("datetime"))[:16].replace("T", " ")
+            if len(day) < 16:
+                continue
+            merged[day] = {
+                "day": day,
+                "open": float(row["open"]), "high": float(row["high"]),
+                "low": float(row["low"]), "close": float(row["close"]),
+                "volume": float(row.get("vol") or 0) * 100,
+            }
+        if len(bars) < 800:
+            break
+        start += 800
+        if start > 200000:
+            break
+    by_day: dict = {}
+    for k in merged.values():
+        by_day.setdefault(k["day"][:10], []).append(k)
+    for d in by_day:
+        by_day[d].sort(key=lambda x: x["day"])
+    return by_day
+
+
+def run_full_realtime(code: str, days: int, capital: float = 100_000) -> dict:
+    """完整引擎单只回测 — 5分K逐根·专业股数·趋势分层·T+1·T0状态机·重进·单笔止损。
+
+    对应 web 版 BEST_PARAMS 终态（含 best_params.json 进化引擎覆盖）。
+    """
+    from backtest import backtest_full_pro
+    from datafeed import fetch_daily_kline
+    from prev_close_params import load_best_params
+
+    params = load_best_params()
+    rows = fetch_daily_kline(code, count=days)
+    if len(rows) < 100:
+        print(f"✗ {code}: 日K不足({len(rows)}行)")
+        return {}
+    min5 = fetch_min5(code)
+    if not min5:
+        print(f"✗ {code}: 5分K获取失败(需通达信mootdx)")
+        return {}
+    r = backtest_full_pro(rows, min5, code, params=params)
+    f = r.get("完整战法(专业股数)", {})
+    base = r.get("对照_纯四态口径b", {})
+    print(f"\n═══ {code} 昨收战法完整回测 (5分K逐根·无未来函数) ═══")
+    print(f"总收益 {f.get('总收益%(市值口径)', 0)}% | CAGR {f.get('年化收益率(CAGR)%', 0)}% | "
+          f"回撤 {f.get('最大回撤%', 0)}% | 波动率 {f.get('年化波动率%', 0)}%")
+    print(f"夏普 {f.get('夏普比率', 0)} | 卡玛 {f.get('卡玛比率', 0)} | 索提诺 {f.get('索提诺比率', 0)} | "
+          f"日胜率 {f.get('日胜率%', 0)}% | 盈亏比 {f.get('盈亏比', 0)}")
+    print(f"做T {f.get('做T次数', 0)}次(+{f.get('做T累计收益%(口径)', 0)}%) | 加仓 {f.get('加仓次数', 0)} | "
+          f"减仓 {f.get('减仓次数', 0)} | 重进 {f.get('重进次数', 0)} | 止损 {f.get('单笔止损次数', 0)} | "
+          f"分钟覆盖 {f.get('分钟覆盖天数', 0)}天")
+    print(f"初始 {f.get('初始资金', 0):,.0f} → 期末 {f.get('期末资产', 0):,.0f} "
+          f"(+{f.get('收益金额', 0):,.0f}元) | 对照口径b(半仓) {base.get('总收益%(复合)')}%")
+    print(f"参数: {json.dumps(params, ensure_ascii=False)}")
+    sigs = r.get("signals", [])
+    if sigs:
+        print("最近5笔信号:")
+        for s in sigs[-5:]:
+            print(f"  {s.get('date', '')} {s.get('action', '')} @{s.get('price', '')} "
+                  f"手{s.get('hands', '')} 盈亏{s.get('pnl', '')}% [{s.get('note', '')}]")
+    print(f"诚实声明: {r.get('诚实声明', '')}")
+    return r
+
+
+def run_full_portfolio(codes: list, years: int, capital: float = 100_000) -> dict:
+    """完整引擎组合回测 — pro版 5分K逐根·等权分仓（每只独立信号）。"""
+    from backtest import backtest_full_portfolio_pro
+
+    days = years * 250 + 50
+    print(f"\n═══ 组合回测 (完整引擎 pro版: {len(codes)}标的 等权) ═══")
+    r = backtest_full_portfolio_pro(codes, count=days, min5_loader=fetch_min5)
+    if "error" in r:
+        print(f"✗ {r['error']}")
+        return r
+    combo = r.get("组合(等权)", {})
+    print(f"总收益 {combo.get('总收益%(复合)', 0)}% | 年化 {combo.get('年化%(近似)', 0)}% | "
+          f"回撤 {combo.get('最大回撤%', 0)}% | 日胜率 {combo.get('日胜率%', 0)}% | 引擎: {combo.get('引擎', '')}")
+    print("个股贡献:")
+    for c in r.get("个股贡献", []):
+        print(f"  {c['代码']}: {c['总收益%']}% 夏普{c['夏普']} 做T{c['做T次数']}次(+{c['做T收益%']}%) "
+              f"加仓{c['加仓']} 减仓{c['减仓']} 重进{c['重进']} 持仓周期{c['持仓周期']}")
+    print(f"诚实声明: {r.get('诚实声明', '')}")
+    return r
+
+
+def _strong_pool_gate(df_day):
+    """回测侧强势池预筛（单标的判定, 复用 screening/strong_stock.score_strong_kline）。
+
+    实盘侧 runner.py:166-174 用 strong_grade∈{A,B} 或 strong_score≥70 拦昨收买点B；
+    回测此前直接把用户 codes 交给回测（无强势门槛），造成"回测在强势池跑、
+    实盘在普通票跑"的口径不闭环。这里对用户传入的每只标的用日K现算强势分,
+    非强势票返回 (False, 分级信息), 由调用方"标注跳过"而非照跑。
+
+    只读已取到的日K（无额外网络、不扫全市场、无未来函数——判定用回测窗口
+    全历史, 表达"该标的在回测期内属强势池"）。
+
+    Returns:
+        (is_strong: bool, info: dict)  info = {score, grade, decision}
+    """
+    try:
+        from screening.strong_stock import score_strong_kline
+    except Exception:
+        # 预筛实现缺失时不强拦（保持回测可跑, 下游实盘护栏仍生效）
+        logger = logging.getLogger("prev_close_strategy")
+        logger.warning("screening.strong_stock 不可用, 回测强势池预筛降级放行")
+        return True, {"score": 0, "grade": "?", "decision": "strong_gate_unavailable_allow"}
+    if df_day is None or getattr(df_day, "empty", True) or len(df_day) < 30:
+        return False, {"score": 0, "grade": "D", "decision": "K线不足,强势池无法判定"}
+    closes = [float(x) for x in df_day["close"].values]
+    r = score_strong_kline(closes)
+    is_strong = r["strong"]
+    return is_strong, {"score": r["score"], "grade": r["grade"],
+                       "decision": "pass" if is_strong else "not_in_strong_pool"}
+
+
 def main():
-    ap = argparse.ArgumentParser(description="昨收价极简交易体系回测")
+    ap = argparse.ArgumentParser(description="昨收价极简交易体系回测 (v2.0 完整引擎)")
     ap.add_argument("--codes", default="600519,000858,601318,000831,002589",
                     help="股票代码,逗号分隔")
     ap.add_argument("--years", type=int, default=2, help="回测年数")
     ap.add_argument("--capital", type=float, default=100_000, help="初始资金/标的")
-    ap.add_argument("--mode", choices=["next_open", "same_close", "minute", "multitf", "portfolio"], default="next_open",
-                    help="next_open=次日开盘买 / same_close=当日收盘买 / minute=分钟级 / multitf=多周期共振 / portfolio=组合回测(多标的共享资金)")
+    ap.add_argument("--mode", choices=["next_open", "same_close", "auto", "minute", "multitf", "portfolio",
+                                        "realtime", "portfolio_pro"], default="realtime",
+                    help="realtime=完整引擎单只(5分K逐根,默认) / portfolio_pro=完整引擎组合 / "
+                         "auto=按标的波动特征自动选当日收盘/次日开盘买(P0-②, 建议) / "
+                         "next_open=次日开盘买 / same_close=当日收盘买 / minute=分钟级 / "
+                         "multitf=多周期共振 / portfolio=组合回测(多标的共享资金)")
     ap.add_argument("--tf", choices=["m5", "m15", "m30"], default="m15",
                     help="分钟模式的时间框架(默认m15=15分钟)")
     ap.add_argument("--stop", type=float, default=0.08, help="硬止损百分比(默认8%%)")
+    ap.add_argument("--max-positions", type=int, default=3, help="组合模式最大同时持仓数(默认3, 实测5/8回撤更低更平滑, P1-①)")
     args = ap.parse_args()
 
     codes = [c.strip() for c in args.codes.split(",") if c.strip()]
@@ -957,7 +1351,50 @@ def main():
     is_portfolio = args.mode == "portfolio"
     portfolio_sigs = {}  # code -> 加信号列df (组合模式收集用)
 
+    # ⭐ v2.0 完整引擎组合模式（5分K逐根·等权分仓）
+    if args.mode == "portfolio_pro":
+        # ⭐ P0-① 回测侧强势池预筛: 组合内非强势票剔除, 保证与实盘强势池口径闭环
+        _kept = []
+        for _c in codes:
+            try:
+                _ddf = fetch_kline(_c, max(days, 100))
+            except Exception:
+                _ddf = None
+            if _ddf is not None and getattr(_ddf, "empty", True):
+                _ddf = None
+            _st, _sgt = _strong_pool_gate(_ddf)
+            if _st:
+                _kept.append(_c)
+            else:
+                print(f"✗ {_c}: 标的不符合强势池, 已跳过 (grade={_sgt['grade']}, "
+                      f"strong_score={_sgt['score']})")
+        if not _kept:
+            print("✗ 全部标的不符合强势池, 组合回测跳过")
+            return
+        codes = _kept
+        run_full_portfolio(codes, args.years, args.capital)
+        return
+
     for code in codes:
+        # ⭐ v2.0 完整引擎单只模式（5分K逐根·专业股数·趋势分层·T+1）
+        if args.mode == "realtime":
+            # ⭐ P0-① 回测侧强势池预筛: 先取日K判定强势, 非强势票跳过
+            try:
+                _daydf = fetch_kline(code, max(days, 100))
+            except Exception:
+                _daydf = None
+            if _daydf is not None and getattr(_daydf, "empty", True):
+                _daydf = None
+            _strong, _sgt = _strong_pool_gate(_daydf)
+            if not _strong:
+                print(f"✗ {code}: 标的不符合强势池, 已跳过 (grade={_sgt['grade']}, "
+                      f"strong_score={_sgt['score']})")
+                print(f"  ⚠ 与实盘 runner.py strong_grade∈{{A,B}}/score≥70 强池护栏口径一致, "
+                      f"回测不作数（避免虚高胜率）")
+                continue
+            run_full_realtime(code, days, args.capital)
+            continue
+
         is_minute = args.mode == "minute"
         is_multitf = args.mode == "multitf"
         try:
@@ -978,6 +1415,17 @@ def main():
             print(f"✗ {code}: K线不足({len(df)}行)")
             continue
         df.attrs["code"] = code
+
+        # ⭐ P0-① 回测侧强势池预筛（与实盘 runner.py:166-174 同源门槛）:
+        #   非强势票标注跳过, 不回测 —— 治"回测在强势池跑、实盘在普通票跑"口径不闭环
+        _strong, _sgt = _strong_pool_gate(df)
+        _st_mode = f" 强势池[{_sgt['decision']} grade={_sgt['grade']} score={_sgt['score']}]"
+        if not _strong:
+            print(f"✗ {code}: 标的不符合强势池, 已跳过 (grade={_sgt['grade']}, strong_score={_sgt['score']})")
+            print(f"  ⚠ 实盘侧 runner.py 仅对 strong_grade∈{{A,B}} 或 strong_score≥70 的候选跑昨收战法; "
+                  f"为与实盘口径一致, 该标的回测不作数（避免虚高胜率）")
+            continue
+        print(_st_mode)
 
         # ── 组合模式: 收集信号, 循环结束后统一回测 ──
         if is_portfolio:
@@ -1021,8 +1469,16 @@ def main():
         pat_dist = sig_df["pattern"].value_counts().to_dict()
         n_sig = int(sig_df["signal"].sum())
 
+        _entry_mode = args.mode
+        _auto_note = ""
+        if args.mode == "auto":
+            # P0-② 自动选买入模式(按标的波动/趋势特征): 高波动强趋势→当日收盘买, 否则→次日开盘买
+            _entry_mode = _auto_entry_mode(df)
+            _auto_note = f" [auto→{_entry_mode} 按波动/趋势自动选]"
+        print(f"    entry_mode = {_entry_mode}{_auto_note}")
+
         result = backtest_single(sig_df, capital=args.capital,
-                                 entry_mode=args.mode, stop_pct=args.stop)
+                                 entry_mode=_entry_mode, stop_pct=args.stop)
         perf = performance(result)
         all_trades.extend(result["trades"])
 
@@ -1037,7 +1493,7 @@ def main():
     if is_portfolio and portfolio_sigs:
         print(f"\n═══ 组合回测 ({len(portfolio_sigs)}标的 共享资金 {args.capital:,.0f}元) ═══")
         result = backtest_portfolio(portfolio_sigs, capital=args.capital,
-                                    max_positions=3, stop_pct=args.stop,
+                                    max_positions=args.max_positions, stop_pct=args.stop,
                                     entry_mode=args.mode if args.mode != "portfolio" else "next_open")
         perf = performance(result)
         all_trades = result["trades"]

@@ -216,6 +216,7 @@ def get_kline(code: str, days: int = 500) -> pd.DataFrame:
         from data.shared_cache import cache as _ck
         cached = _ck.get(f"kline_{code}_{days}")
         if cached is not None:
+            _set_kline_attrs(cached, code)
             return cached
     except:
         pass
@@ -227,6 +228,7 @@ def get_kline(code: str, days: int = 500) -> pd.DataFrame:
             _ck.set(f"kline_{code}_{days}", df, 60)
         except:
             pass
+        _set_kline_attrs(df, code)
         return df
 
     df = _get_kline_from_tencent(code, days)
@@ -236,10 +238,21 @@ def get_kline(code: str, days: int = 500) -> pd.DataFrame:
             _ck.set(f"kline_{code}_{days}", df, 60)
         except:
             pass
+        _set_kline_attrs(df, code)
         return df
 
     logger.warning(f"K线 {code}: 所有数据源失败")
     return pd.DataFrame()
+
+
+def _set_kline_attrs(df: pd.DataFrame, code: str) -> None:
+    """为K线DataFrame注入代码元数据 (v14.46 合规修复):
+    下游策略(如 prev_close_play 板块差异化涨停判定)需要 code 来按板块取涨跌停阈值。
+    """
+    try:
+        df.attrs["code"] = str(code)
+    except Exception:
+        pass
 
 
 def get_kline_period(code: str, period: str = "day", days: int = 250) -> pd.DataFrame:
@@ -520,6 +533,15 @@ SECTOR_CACHE = Path(__file__).resolve().parent.parent / "data" / "sector_cache.j
 SECTOR_CACHE_TTL = 1800  # 30分钟(盘中板块轮动变化快)
 FLOW_CACHE_FILE = Path(__file__).resolve().parent.parent / "data" / "flow_cache.json"
 FLOW_CACHE_TTL = 3600  # 1小时
+# ── 个股行业归属 (v14.49 新增 2026-09-11, 修 P0-3 板块维度失效) ──────────────
+# 背景: 候选股来自腾讯行情(dict 无行业字段) + fundamentals_store.stock_sector 表为空
+#   → c["industry"] 恒为空 → [Strong] Sector top5 filter 恒 0 通过(实测 70/70)、
+#     板块热度排序全为 0。修复: 用东财 f100(行业名) 建 code→行业 映射(磁盘缓存),
+#   并把"强势板块"判据统一到东财行业名(此前混入同花顺概念名, 两个命名空间永不交集)。
+INDUSTRY_CACHE = Path(__file__).resolve().parent.parent / "data" / "industry_cache.json"
+INDUSTRY_CACHE_TTL = 86400  # 1天(行业归属日内不变)
+_INDUSTRY_MEM: dict = {"ts": 0.0, "map": {}}
+_INDUSTRY_RANK_MEM: dict = {"ts": 0.0, "names": []}
 
 DEFAULT_SECTORS = [
     {"name": "银行", "code": "BK0475", "change_pct": 0, "up": 0, "down": 0, "leader": ""},
@@ -705,13 +727,102 @@ def get_top_sectors(top_n=5):
     return top
 
 
+def get_industry_map(refresh: bool = False) -> dict:
+    """code → 东财行业名(f100) 全市场映射 (v14.49 新增, 修 P0-3).
+
+    用途: 给候选股补 industry 字段 —— 候选来自腾讯行情(无行业字段)、
+    fundamentals_store.stock_sector 表为空 → 此前 c["industry"] 恒空,
+    [Strong] 板块过滤恒 0 通过(实测 70/70)、板块热度全 0。
+    源: push2delay(免 WAF) 全市场快照, fields=f12(代码),f100(行业名)。
+    缓存: 内存 + data/industry_cache.json(1天)。
+    """
+    import json as _j
+    import time as _t
+    if not refresh and _INDUSTRY_MEM["map"] and (_t.time() - _INDUSTRY_MEM["ts"]) < 600:
+        return _INDUSTRY_MEM["map"]
+    if not refresh:
+        try:
+            if INDUSTRY_CACHE.exists() and (_t.time() - INDUSTRY_CACHE.stat().st_mtime) < INDUSTRY_CACHE_TTL:
+                m = _j.load(open(INDUSTRY_CACHE, encoding="utf-8")).get("map", {})
+                if m:
+                    _INDUSTRY_MEM.update({"ts": _t.time(), "map": m})
+                    logger.debug(f"[Industry] 缓存命中 {len(m)} 只")
+                    return m
+        except Exception:
+            pass
+    import requests
+    out: dict = {}
+    url = "https://push2delay.eastmoney.com/api/qt/clist/get"
+    fs = "m:0+t:6+f:!2,m:0+t:80+f:!2,m:1+t:2+f:!2,m:1+t:23+f:!2"
+    try:
+        for page in range(1, 60):
+            params = {"pn": page, "pz": 100, "po": 1, "np": "1", "fltt": "2", "invt": "2",
+                      "fid": "f3", "fs": fs, "fields": "f12,f14,f100"}
+            r = requests.get(url, params=params, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            items = (r.json().get("data") or {}).get("diff") or []
+            if not items:
+                break
+            for it in items:
+                code = str(it.get("f12") or "")
+                ind = str(it.get("f100") or "").strip()
+                if code and ind and ind != "-":
+                    out[code] = ind
+            if len(items) < 100:
+                break
+    except Exception as e:
+        logger.warning(f"[Industry] 拉取失败: {e}")
+    if out:
+        _INDUSTRY_MEM.update({"ts": _t.time(), "map": out})
+        try:
+            INDUSTRY_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            _j.dump({"map": out}, open(INDUSTRY_CACHE, "w", encoding="utf-8"), ensure_ascii=False)
+        except Exception:
+            pass
+        logger.info(f"[Industry] 行业映射 {len(out)} 只")
+    else:
+        logger.warning("[Industry] 行业映射为空(全部数据源失败) → 板块过滤将 fail-open")
+    return out
+
+
+def get_industry_ranking(top_n: int = 15) -> list:
+    """涨幅前N【东财行业板块】名 (v14.49 新增, P0-3).
+
+    与 get_top_sectors 的区别: 后者可能退化成同花顺"概念名"(光伏玻璃/AI算力…),
+    与个股 industry(东财行业名) 属不同命名空间 → 过滤恒 0。
+    本函数只取东财行业板块(fs=m:90+t:2, push2delay), 保证与 get_industry_map 同名空间。
+    """
+    import time as _t
+    if _INDUSTRY_RANK_MEM["names"] and (_t.time() - _INDUSTRY_RANK_MEM["ts"]) < 300:
+        return _INDUSTRY_RANK_MEM["names"][:top_n]
+    import requests
+    names: list = []
+    try:
+        url = "https://push2delay.eastmoney.com/api/qt/clist/get"
+        params = {"pn": "1", "pz": "100", "po": "1", "np": "1", "fltt": "2", "invt": "2",
+                  "fs": "m:90+t:2", "fields": "f3,f12,f14"}
+        r = requests.get(url, params=params, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        items = (r.json().get("data") or {}).get("diff") or []
+        rows = [(str(i.get("f14") or ""), float(i.get("f3") or 0)) for i in items if i.get("f14")]
+        rows.sort(key=lambda x: x[1], reverse=True)
+        names = [n for n, _ in rows]
+    except Exception as e:
+        logger.warning(f"[Industry] 行业排名失败: {e}")
+    if names:
+        _INDUSTRY_RANK_MEM.update({"ts": _t.time(), "names": names})
+        logger.info(f"[Industry] 行业涨幅 TOP{top_n}: {names[:top_n]}")
+        return names[:top_n]
+    logger.warning("[Industry] 行业排名为空 → 板块过滤 fail-open(本轮不过滤)")
+    return []
+
+
 def get_limit_up_count():
     """获取涨停股票数量(近似) — v14.41: 东财push2被WAF屏蔽, 改用腾讯全市场采样统计
     涨停判定: 主板涨幅>=9.8%, 创业板/科创板>=19.5% (近似, 采样2000只)
+    腾讯批量查询
     """
     try:
-        # 腾讯批量查询全市场股票, 统计涨幅达涨停阈值的数量
         codes = get_real_stock_list()
+
         if not codes:
             return 0
         # 采样: 前500 + 中500 + 后1000, 覆盖大中小市值

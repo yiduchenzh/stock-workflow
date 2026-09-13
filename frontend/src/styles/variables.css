@@ -1,0 +1,100 @@
+:root {
+  /* 背景层级 */
+  --bg-deepest:   #0A0E17;
+  --bg-primary:   #0D1117;
+  --bg-secondary: #161B22;
+  --bg-tertiary:  #1C2128;
+
+  /* 文字层级 */
+  --text-primary:   #F0F6FC;
+  --text-secondary: #8B949E;
+  --text-tertiary:  #484F58;
+
+  /* 涨跌色 (A股: 红涨绿跌) */
+  --up:      #EF5350;
+  --down:    #26A69A;
+  --up-bg:   rgba(239,83,80,0.1);
+  --down-bg: rgba(38,166,154,0.1);
+
+  /* 评分色 */
+  --score-high: #3FB950;
+  --score-mid:  #D29922;
+  --score-low:  #F85149;
+
+  /* 信号色 */
+  --signal-bull:    #58A6FF;
+  --signal-bear:    #F85149;
+  --signal-neutral: #D29922;
+
+  /* 品牌色 */
+  --brand:        #58A6FF;
+  --brand-accent: #F0883E;
+  --brand-gradient: linear-gradient(135deg, #58A6FF, #F0883E);
+
+  /* 边框 */
+  --border:       #21262D;
+  --border-light: #30363D;
+
+  /* 字号 */
+  --fs-micro:  10px;
+  --fs-small:  12px;
+  --fs-base:   13px;
+  --fs-medium: 15px;
+  --fs-large:  18px;
+  --fs-xl:     24px;
+  --fs-number: 36px;
+
+  /* 间距 */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-12: 48px;
+
+  /* 圆角 */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+  background: var(--bg-deepest);
+  color: var(--text-primary);
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-primary); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-light); }
+
+/* 免责声明 */
+.disclaimer {
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--fs-micro);
+  color: var(--score-low);
+  border-top: 1px solid var(--border);
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* 骨架屏 */
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-secondary) 50%, var(--bg-tertiary) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--radius-sm);
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}

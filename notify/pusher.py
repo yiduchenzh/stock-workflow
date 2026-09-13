@@ -4,6 +4,31 @@ from datetime import datetime
 from pathlib import Path
 logger = logging.getLogger("aurora.push")
 
+# ── 安全加固 S-1: 密钥只从 .env/环境变量读取 (禁止 config.yaml 明文) ──
+_PROJ = Path(__file__).resolve().parent.parent
+_ENV_FILE = _PROJ / ".env"
+def _load_dotenv():
+    """轻量 .env 读取 (有 python-dotenv 则优先, 否则手动解析 KEY=VALUE)."""
+    if not _ENV_FILE.exists():
+        return
+    try:
+        from dotenv import load_dotenv
+    except Exception:
+        load_dotenv = None
+    if load_dotenv:
+        load_dotenv(_ENV_FILE, override=False)
+        return
+    for line in _ENV_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k, v = k.strip(), v.strip().strip('"').strip("'")
+        if k and k not in os.environ and v:
+            os.environ[k] = v
+
+_load_dotenv()
+
 def push_trade_execution(engine):
     """推送每笔交易执行详情 (买入/卖出)"""
     account = getattr(engine, "account", None)
@@ -17,26 +42,41 @@ def push_trade_execution(engine):
     today_trades = [t for t in trades if str(t.get("time", ""))[:10] == today]
     if not today_trades:
         return
-    title = f"📊 Aurora 交易执行 {datetime.now():%H:%M}"
+    title = f"📊【工作流】交易执行 {datetime.now():%H:%M}"
     NL = chr(10)
     lines = []
     lines.append(f"【{today} 交易记录】")
+    lines.append(f"市场: {getattr(engine,'market_regime','?')} ({getattr(engine,'market_score',0):.0f}/100)")
     buys = [t for t in today_trades if t.get("action") == "buy"]
     sells = [t for t in today_trades if t.get("action") == "sell"]
     if buys:
         lines.append(f"🟢 买入: {len(buys)}笔")
         for t in buys[-5:]:
-            lines.append(f"  买入 {t.get('code','?')} {t.get('shares',0)}股 @{t.get('price',0):.2f} {t.get('reason','')[:20]}")
+            lines.append(f"  买入 {t.get('code','?')} {t.get('shares',0)}股 @{t.get('price',0):.2f}")
+            lines.append(f"    ▸ {t.get('reason','')}")
     if sells:
         lines.append(f"🔴 卖出: {len(sells)}笔")
         for t in sells[-5:]:
             pnl = t.get("pnl", 0)
             pnl_s = f"盈亏{pnl:+.0f}" if pnl else ""
-            lines.append(f"  卖出 {t.get('code','?')} {t.get('shares',0)}股 @{t.get('price',0):.2f} {pnl_s} {t.get('reason','')[:20]}")
+            lines.append(f"  卖出 {t.get('code','?')} {t.get('shares',0)}股 @{t.get('price',0):.2f} {pnl_s}")
+            lines.append(f"    ▸ {t.get('reason','')}")
     info = account.get_account_info() if hasattr(account, "get_account_info") else {}
     lines.append(f"")
     lines.append(f"账户: 现金{info.get('cash',account.cash):,.0f} 总资产{info.get('total_value',account.total_value):,.0f}")
-    lines.append(f"持仓: {len(account.positions)}只")
+    # ⭐ 持仓明细（盈亏指导）
+    positions = getattr(account, "positions", {}) or {}
+    if positions:
+        lines.append(f"持仓 {len(positions)}只:")
+        for pc, pp in list(positions.items())[:6]:
+            sh = pp.get("shares", 0)
+            co = pp.get("avg_cost", 0)
+            cu = pp.get("current_price", co) or co
+            pnl_pct = (cu / co - 1) * 100 if co else 0
+            pnl_amt = (cu - co) * sh if co else 0
+            lines.append(f"  {pc} {sh}股 成本{co:.2f} 现价{cu:.2f} 盈亏{pnl_pct:+.1f}%({pnl_amt:+.0f})")
+    else:
+        lines.append("持仓: 0只")
     _send(title, NL.join(lines), engine)
 
 def push_auction_results(engine):
@@ -46,7 +86,7 @@ def push_auction_results(engine):
     if not candidates and not screened and engine.market_score < 50:
         logger.info("[Push] 竞价: 无候选,跳过")
         return
-    title = f"🔍 Aurora 竞价选股 {datetime.now():%m-%d %H:%M}"
+    title = f"🔍【工作流】竞价选股 {datetime.now():%m-%d %H:%M}"
     desc = f"市场: {engine.market_regime} ({engine.market_score:.0f}/100)\n候选: {len(candidates)}只\nCAN SLIM通过: {len(screened)}只\n"
     if screened:
         desc += "\nTOP 5:\n"
@@ -61,8 +101,8 @@ def push_trade_signal(engine):
     if not plans and not alerts and not t0:
         logger.info("[Push] 信号: 无计划无告警,跳过")
         return
-    title = f"📈 Aurora 交易信号 {datetime.now():%H:%M}"
-    desc = ""
+    title = f"📈【工作流】交易信号 {datetime.now():%H:%M}"
+    desc = f"市场: {getattr(engine,'market_regime','?')} ({getattr(engine,'market_score',0):.0f}/100)\n"
     if plans:
         desc += f"🟢 开仓: {len(plans)}笔\n"
         for p in plans[:3]:
@@ -85,7 +125,7 @@ def push_daily_review(engine):
     if not plans and not alerts and engine.market_score < 50:
         logger.info("[Push] 复盘: 无交易,跳过")
         return
-    title = f"📋 Aurora 复盘 {datetime.now():%m-%d}"
+    title = f"📋【工作流】复盘 {datetime.now():%m-%d}"
     desc = f"市场: {engine.market_regime} ({engine.market_score:.0f}/100)\n今日交易: {len(plans)}笔\n告警: {len(alerts)}条\n"
     if account:
         info = account.get_account_info()
@@ -109,7 +149,7 @@ def push_morning_report(engine):
         return
     candidates = getattr(engine, "candidates", [])
     screened = getattr(engine, "screened", [])
-    title = "Aurora晨报 " + datetime.now().strftime("%m-%d %H:%M")
+    title = "📰【工作流】晨报 " + datetime.now().strftime("%m-%d %H:%M")
     lines = []
     NL = chr(10)
     lines.append("【市场总览】")
@@ -220,10 +260,10 @@ def push_trade_plan(engine):
     analysis = getattr(engine, "analysis", [])
     if not plans and not scores:
         logger.info("[Push] 计划: 今日无交易计划")
-        _send("Aurora交易计划 " + datetime.now().strftime("%m-%d %H:%M"),
+        _send("📋【工作流】交易计划 " + datetime.now().strftime("%m-%d %H:%M"),
               "今日无符合条件的交易计划\n市场状态: " + str(engine.market_regime) + " (" + str(engine.market_score) + "/100)", engine)
         return
-    title = "Aurora交易计划 " + datetime.now().strftime("%m-%d %H:%M")
+    title = "📋【工作流】交易计划 " + datetime.now().strftime("%m-%d %H:%M")
     NL = chr(10)
     lines = []
     lines.append("【市场状态】")
@@ -253,7 +293,8 @@ def push_trade_plan(engine):
             lines.append("  " + str(s.get("code","?")) + " 综合评分:" + str(s.get("composite",0)) + " 策略:" + str(s.get("best_strategy","?")))
     lines.append("")
     lines.append("总策略: " + str(len(analysis)) + "只 | 计划开仓: " + str(len(plans)) + "只")
-    _send(title, NL.join(lines), engine)
+    # v14.46: body_only=True — 交易计划同一天只推一次(配合engine_live session节流)
+    _send(title, NL.join(lines), engine, body_only=True)
 
 
 _CSUFFIX = "\n\n⚠️ 基于公开数据的历史回测分析，仅供参考，不构成投资建议。"
@@ -267,15 +308,25 @@ def _comply(text):
         text = re.sub(pat, repl, text, flags=re.IGNORECASE)
     return text + _CSUFFIX if len(text) > 60 else text
 
-def _send(title, desc, engine):
+def _send(title, desc, engine, body_only: bool = False):
     title = _comply(title)
     desc = _comply(desc)
-    token = engine.cfg.get("notify", {}).get("sct_token", "")
-    if not token: return
+    # 安全加固 S-1: token 只从环境变量 SCT_TOKEN 读取 (config.yaml 不再存明文)。
+    # 无 token 时降级为「跳过推送 + 日志警告」, 绝不伪造/重放旧凭据。
+    token = os.environ.get("SCT_TOKEN", "").strip()
+    if not token or len(token) < 10:
+        logger.warning("[Push] 未配置有效的 SCT_TOKEN (请设置环境变量/.env), 跳过推送: %s", title[:30])
+        return
     try:
-        token = os.environ.get("SCT_TOKEN", token)
-        if not token or len(token) < 10: return
+        # ⭐ 2026-08-10: 同一条内容只推一次（24h 窗口去重）
+        # v14.46: body_only=True 时仅标题指纹(交易计划专用) — desc含不同股票代码,
+        #         用desc指纹永不撞→刷屏; 仅标题指纹使"今日交易计划"同一天只推一次
+        from notify.dedup import should_push
+        if not should_push("push", title, desc, body_only=body_only):
+            logger.info(f"[Push] 去重跳过(24h内已推): {title[:30]}...")
+            return
         requests.post(f"https://sctapi.ftqq.com/{token}.send",
             json={"title": title, "desp": desc}, timeout=10)
         logger.info(f"[Push] {title[:30]}...")
-    except Exception: pass
+    except Exception as e:
+        logger.warning("[Push] 发送失败: %s", e)

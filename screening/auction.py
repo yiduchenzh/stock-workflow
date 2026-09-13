@@ -5,6 +5,14 @@ logger = logging.getLogger("aurora.auction")
 
 UA = "Mozilla/5.0"
 
+# ⭐ 2026-08-20 A/B 实证(2年1884只全市场, 25512竞价信号):
+#   高开 gap 越高, 次日胜率单调下降 —— 1~2%:71.5% → 2~3%:62.9% → 3~4%:58.6%
+#   → 4~5%:54.3% → 5~6%:51.3% → 6~7%:47.2% (隔夜口径)。
+#   "高开2-5%黄金区间"是自媒体宣称, 数据证伪; 真实规律=低高开优先(1-2%最优)。
+#   反加权排序 (cc - k×gap) 分年度/top_n/系数全部稳健提升: 隔夜胜率 63.6%→72.8%(k=2)。
+#   k=0 关闭=原行为(兼容历史回测)。
+GAP_PENALTY_K = 2.0
+
 def get_auction_data(codes: list) -> dict:
     """获取集合竞价数据 (腾讯接口)"""
     if not codes: return {}
@@ -87,7 +95,13 @@ def calc_cc_ratio(auction_data: dict) -> dict:
     }
 
 def auction_screen(candidates: list, top_n: int = 10) -> list:
-    """集合竞价筛选: 取CC≥1.5的前N只"""
+    """集合竞价筛选: 取CC≥1.5的前N只
+
+    v14.46 (2026-08-10 融合 hunter-v2 pick_engine 竞价方向):
+    增加 hunter-v2 竞价护栏（pick_engine.py direction=auction）:
+      gap 1%~7% (高开有承接意愿, 但防追高) + 量比≥1.5 + 成交额≥0.3亿
+    保留 CC 承接力分级作为方向确认。
+    """
     if not candidates: return []
     codes = [c.get("code", "") for c in candidates if c.get("code")]
     auction = get_auction_data(codes)
@@ -98,9 +112,50 @@ def auction_screen(candidates: list, top_n: int = 10) -> list:
         ad = auction.get(code, {})
         cc_info = calc_cc_ratio(ad)
         c["auction"] = cc_info
+        # ── v14.46: hunter-v2 竞价护栏（防追高 + 量能确认）──
+        guard = _auction_guard(c, ad)
+        if not guard["ok"]:
+            c["auction"]["guard_reason"] = guard["reason"]
+            logger.debug(f"[Auction] {code} 护栏拦截: {guard['reason']}")
+            continue
         if cc_info["signal"]:
             results.append(c)
     
-    results.sort(key=lambda x: x["auction"]["cc"], reverse=True)
-    logger.info(f"[Auction] {len(results)}/{len(candidates)} passed (CC>=1.5)")
+    # ⭐ 2026-08-20 A/B 实证(2年1884只全市场 25512信号): 高开 gap 越高次日胜率单调降
+    #   1~2%:71.5% → 2~3%:62.9% → 3~4%:58.6% → 4~5%:54.3% → 5~6%:51.3% → 6~7%:47.2%
+    #   "黄金区间2-5%"自媒体宣称被证伪(加权反而 58.9%<基线63.6%)。反加权 (cc - k×gap)
+    #   隔夜胜率 63.6%→72.8% / 次日收 62.5%→70.2% (k=2, 分年度/top_n/系数全部稳健)。
+    #   排序键 = cc - GAP_PENALTY_K × gap(高开越低越优先, 1-2%最优); k=0 关闭=原行为。
+    def _sort_key(x):
+        cc = x["auction"]["cc"]
+        gap = x["auction"].get("open_change") or 0.0
+        return cc - GAP_PENALTY_K * gap
+
+    results.sort(key=_sort_key, reverse=True)
+    logger.info(f"[Auction] {len(results)}/{len(candidates)} passed (CC>=1.5 + 竞价护栏 + 低高开优先 k={GAP_PENALTY_K})")
     return results[:top_n]
+
+
+def _auction_guard(c: dict, ad: dict) -> dict:
+    """hunter-v2 竞价方向护栏（pick_engine.py direction=auction 同口径）:
+
+    1. 高开 gap 1%~7%: 开盘有承接意愿(≥1%) 且 不追高(≤7%)
+    2. 量比 ≥1.5: 竞价放量确认
+    3. 成交额 ≥0.3亿: 有真实资金参与
+    """
+    open_p = ad.get("open") or c.get("open") or 0
+    pre_c = ad.get("last_close") or c.get("last_close") or 0
+    if not open_p or not pre_c:
+        return {"ok": True, "reason": ""}  # 数据缺失不拦截（保守放行）
+    gap = (open_p / pre_c - 1) * 100
+    vr = c.get("vol_ratio") or 0
+    amount_yi = (c.get("amount_wan") or 0) / 10000.0
+    if gap < 1.0:
+        return {"ok": False, "reason": f"高开不足 gap={gap:.1f}%<1%"}
+    if gap > 7.0:
+        return {"ok": False, "reason": f"防追高 gap={gap:.1f}%>7%"}
+    if vr < 1.5:
+        return {"ok": False, "reason": f"量比不足 vr={vr:.1f}<1.5"}
+    if amount_yi < 0.3:
+        return {"ok": False, "reason": f"成交额不足 {amount_yi:.2f}亿<0.3亿"}
+    return {"ok": True, "reason": f"gap={gap:.1f}% vr={vr:.1f} 额{amount_yi:.2f}亿"}

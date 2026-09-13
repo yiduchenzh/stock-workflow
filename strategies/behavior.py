@@ -39,8 +39,9 @@ def diagnose() -> dict:
             "advice": "暂无明显偏误" if not issues else "; ".join(issues)}
 
 def _load_journal():
-    try: return json.loads(JOURNAL.read_text()) if JOURNAL.exists() else []
+    # v14.50 P2-B: 显式utf-8(防GBK默认编码读崩溃)
+    try: return json.loads(JOURNAL.read_text(encoding="utf-8")) if JOURNAL.exists() else []
     except Exception: return []
 def _save_journal(j):
     JOURNAL.parent.mkdir(parents=True, exist_ok=True)
-    JOURNAL.write_text(json.dumps(j[-200:], indent=2, ensure_ascii=False))
+    JOURNAL.write_text(json.dumps(j[-200:], indent=2, ensure_ascii=False), encoding="utf-8")

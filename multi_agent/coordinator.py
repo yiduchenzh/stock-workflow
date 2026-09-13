@@ -42,23 +42,31 @@ class MultiAgentCoordinator:
         return count
 
     def run_all_morning(self):
-        """所有Agent执行晨盘 (v14.44: 跨Agent持仓去重 — 后跑Agent跳过已被持有股票)"""
+        """所有Agent执行晨盘 (v14.44: 跨Agent持仓去重 — 后跑Agent跳过已被持有股票)
+        v14.46 方案2: 跨Agent信号层去重 — 同日同(代码+策略)只允许第一个Agent买入
+        """
         results = {}
         held_global = {}  # code -> [agents持有列表]
+        claims_global = {}  # (code,strategy) -> agent名
         for name, agent in self.agents.items():
             try:
-                # 注入已持有股票(前面Agent)到本Agent排除列表
-                if held_global:
-                    exclude = set(held_global.keys())
-                    if hasattr(agent, 'engine') and agent.engine:
-                        agent.engine.agent_exclude_codes = exclude
-                        logger.info(f"[Dedup] {name} 排除{len(exclude)}只已被持有: "
-                                    f"{sorted(exclude)[:5]}{'...' if len(exclude) > 5 else ''}")
+                # v14.50(P0-B): 经agent实例传递去重 — 原直接设agent.engine属性在
+                #   run_morning()的_fresh_engine()重建后丢失 → 重叠买入
+                agent.set_exclusions(held_global if held_global else None,
+                                     claims_global if claims_global else None)
                 agent.run_morning()
                 results[name] = agent.get_summary()
                 logger.info(f"[Coord] {name} 晨盘完成: {results[name]['total_value']:.0f}")
                 # 记录本Agent新持仓到全局去重表
                 self._update_held(held_global, agent)
+                # v14.46: 收集本Agent信号认领 → 全局
+                try:
+                    own = getattr(agent.engine, "agent_signal_claims_own", None)
+                    if own:
+                        for k, v in own.items():
+                            claims_global[k] = v
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error(f"[Coord] {name} 晨盘失败: {e}")
                 results[name] = {"error": str(e)}
@@ -68,18 +76,25 @@ class MultiAgentCoordinator:
         return results
 
     def run_all_intraday(self):
-        """所有Agent执行盘中扫描 (v14.44: 跨Agent持仓去重)"""
+        """所有Agent执行盘中扫描 (v14.44: 跨Agent持仓去重; v14.46 信号去重)"""
         results = {}
         held_global = {}
+        claims_global = {}
         for name, agent in self.agents.items():
             try:
-                if held_global:
-                    exclude = set(held_global.keys())
-                    if hasattr(agent, 'engine') and agent.engine:
-                        agent.engine.agent_exclude_codes = exclude
+                # v14.50(P0-B): 经agent实例传递去重(防_fresh_engine重建丢失)
+                agent.set_exclusions(held_global if held_global else None,
+                                     claims_global if claims_global else None)
                 agent.run_intraday()
                 results[name] = agent.get_summary()
                 self._update_held(held_global, agent)
+                try:
+                    own = getattr(agent.engine, "agent_signal_claims_own", None)
+                    if own:
+                        for k, v in own.items():
+                            claims_global[k] = v
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error(f"[Coord] {name} 盘中失败: {e}")
         self._save_aggregate()
@@ -141,8 +156,9 @@ class MultiAgentCoordinator:
             "total_value": sum(s.get("total_value", 0) for s in summaries.values()),
         }
         data_dir = Path(__file__).resolve().parent.parent / "data"
+        # v14.46: 显式 UTF-8 写入(原默认编码→GBK, 读取端UTF-8失败)
         (data_dir / "agent_aggregate.json").write_text(
-            json.dumps(report, indent=2, ensure_ascii=False))
+            json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def get_aggregate_report(self) -> dict:
         """生成汇总报告(用于推送)"""

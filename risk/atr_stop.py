@@ -96,7 +96,7 @@ def atr_stop_loss(entry_price, current_price, atr_value, market_regime="range"):
 
 def atr_trailing_stop(entry_price, highest_price, current_price, atr_value):
     """ATR移动止盈 — 从最高点回撤ATR*倍数出场
-    
+
     Args:
         entry_price: 入场价
         highest_price: 入场以来最高价
@@ -107,12 +107,14 @@ def atr_trailing_stop(entry_price, highest_price, current_price, atr_value):
     """
     if not atr_value or atr_value <= 0:
         return None
-    
+
     profit_pct = (highest_price - entry_price) / entry_price * 100
-    
-    # 盈利<5%: 保本止损
+
+    # 盈利<5%: 不设移动止盈线 (v14.50修复: 原返回entry*0.995保本线,
+    #   → 持仓微亏0.5%即触发breach/check_moving_tp清仓, 利润无奔跑机会;
+    #   由调用方固定阶梯(+5%保本)与硬止损兜底)
     if profit_pct < 5:
-        return round(entry_price * 0.995, 2)
+        return None
     
     # 盈利5-15%: 从最高点回撤2倍ATR出场
     if profit_pct < 15:

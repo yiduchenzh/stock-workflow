@@ -15,7 +15,8 @@ TOKEN_COST_FAST = 0.01   # USD/次
 
 def init():
     if TRACKER.exists():
-        return json.loads(TRACKER.read_text())
+        # v14.50 P2-B: 显式utf-8
+        return json.loads(TRACKER.read_text(encoding="utf-8"))
     return {
         "created": str(datetime.now()),
         "currency": "CNY",
@@ -31,7 +32,7 @@ def record():
     if any(d["date"] == today for d in t["daily"]):
         return
 
-    sim = json.loads((ROOT / "data" / "sim_state.json").read_text())
+    sim = json.loads((ROOT / "data" / "sim_state.json").read_text(encoding="utf-8"))
     prev = t["daily"][-1] if t["daily"] else None
     prev_total = prev["total"] if prev else t["capital"]
     pnl = round(sim["total"] - prev_total, 2)
@@ -55,7 +56,7 @@ def record():
     }
     t["daily"].append(entry)
     t["total_token_usd"] = round(t.get("total_token_usd", 0) + token_cost, 3)
-    TRACKER.write_text(json.dumps(t, ensure_ascii=False, indent=2))
+    TRACKER.write_text(json.dumps(t, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[PnL] {today}: 盈亏{pnl:+,.2f} Token${token_cost:.3f}")
 
 def report():

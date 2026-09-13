@@ -3,14 +3,49 @@
 import logging
 logger = logging.getLogger("aurora.position")
 
-def plan_positions(scores: list, capital: float, cfg: dict, bt_engine=None) -> list:
+
+def signal_allowed(strategy: str, signal_allow: dict) -> bool:
+    """信号白名单匹配 (v14.47 P0, 与 agent_strategy_audit.py 共用)
+
+    匹配规则: ①精确 ②前缀(如 prefer chan_buy3 允许 chan_buy1/chan_sell1;
+    prefer naked_pinbar 允许 naked_*; prefer prev_close_A 允许 prev_close_B)
+    """
+    if signal_allow is None:
+        return True
+    if not strategy:
+        return False
+    if strategy in signal_allow:
+        return True
+    # 前缀匹配: prefer key 的首段 == strategy 的首段 (chan → chan_*; naked → naked_*)
+    _pref_base = strategy.split("_")[0]
+    for _k in signal_allow:
+        if not _k:
+            continue
+        _k_base = _k.split("_")[0]
+        if _k_base == _pref_base:
+            return True
+    return False
+
+def plan_positions(scores: list, capital: float, cfg: dict, bt_engine=None,
+                   profile_name: str = None, signal_allow: dict = None) -> list:
+    """仓位计划 — 动态Kelly(回测验证) + GARCH波动率 + 移动止盈
+
+    v14.47 (2026-08-14 账户画像审计修复 P0): 信号白名单过滤
+    原逻辑: 任何 best_strategy 都生成计划 → prev_close_B 穿透到所有 Agent
+    （趋势跟踪者/新手/价值投资者都买了 prev_close_B, 与画像 signal_prefer 不符）
+    修复: 传入 profile_name + signal_allow(画像 signal_prefer), 不在白名单的策略跳过
+    """
     risk_cfg = cfg.get("risk", {})
     max_pos = risk_cfg.get("max_positions", 5)
     rr = risk_cfg.get("take_profit", {}).get("rr_ratio", 2.0)
     plans = []
     for s in scores[:max_pos * 2]:
         if not s.get("signal"): continue
-        strategy = s.get("best_strategy", "unknown")
+        strategy = s.get("best_strategy", "unknown").replace("+W", "").replace("+williams", "")
+        # v14.47 P0: 信号白名单过滤 — 不在画像 signal_prefer 的策略不生成计划
+        if signal_allow is not None and not signal_allowed(strategy, signal_allow):
+            logger.debug(f"[PlanFilter] {profile_name or '?'} 策略{strategy} 不在白名单, 跳过")
+            continue
         # 动态Kelly: 从回测引擎获取真实胜率
         if bt_engine:
             kelly = bt_engine.get_kelly_weight(strategy, rr)

@@ -1,13 +1,32 @@
 """Market data endpoints v4 — 新增板块资金流端点 + 市场广度柱状图数据"""
-import json, os, sys
+import json, os, sys, logging
 PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJ)
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 import urllib.request
 from datetime import datetime
 
+logger = logging.getLogger("aurora.routes.market")
+
 router = APIRouter()
+
+@router.get("/api/sector/members")
+async def sector_members(code: str = Query(..., description="板块名")):
+    """板块钻取: 返回隶属某板块(stock_sector 多对多反向)的所有股票.
+
+    数据来自 data.fundamentals_store.get_sector_members —— 一条 WHERE sector=? 的
+    反向查询, 按 weight 降序排列。stock_sector 无该板块记录时返回空列表(如实,
+    不伪造)。注意: 板块名需与落库的板块名精确匹配(如东财概念板块名)。
+    """
+    try:
+        from data.fundamentals_store import get_sector_members
+        members = get_sector_members(code)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[sector/members] {code} 反向查询失败: {e}")
+        members = []
+    return {"sector": code, "members": members, "count": len(members),
+            "source": "stock_sector", "disclaimer": "板块成分由落库的板块多对多映射驱动, 无数据则返回空列表"}
 
 def _sectors_from_sources():
     """行业板块排名 — data.sources"""

@@ -1,5 +1,5 @@
 """回测引擎 — Walk-Forward + 每策略胜率 + 动态Kelly + 缓存"""
-import logging, json, numpy as np
+import logging, json, hashlib, numpy as np
 import pandas as pd
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,8 +36,33 @@ class BacktestEngine:
         for n in names:
             self.stats[n] = StrategyStats(name=n)
 
-    def _cache_key(self, codes: list, train_days: int, test_days: int, windows: int) -> str:
-        return f"{'-'.join(sorted(codes))}_{train_days}_{test_days}_{windows}"
+    @staticmethod
+    def _kline_period_desc(df: pd.DataFrame) -> str:
+        """轻量 K线数据段描述: 首末日期 + 根数 + 收盘和。
+        同段数据返回同串, 数据段变(换日期/换根数)→ 串变 → 缓存key变, 不再命中旧缓存。"""
+        if df is None:
+            return "empty"
+        try:
+            n = len(df)
+            if n == 0:
+                return "empty"
+            d0 = str(pd.to_datetime(df["date"].iloc[0]))[:10]
+            d1 = str(pd.to_datetime(df["date"].iloc[-1]))[:10]
+            cs = float(df["close"].astype(float).sum())
+            return f"{d0}..{d1}|n:{n}|csum:{cs:.2f}"
+        except Exception:
+            return "fail"
+
+    @staticmethod
+    def _data_period_key(klines: list) -> str:
+        """把各标的 K线数据段描述哈希成单一 data_key 串, 作为缓存 key 的数据段标识。"""
+        parts = [BacktestEngine._kline_period_desc(df) for df in klines]
+        raw = "|".join(sorted(parts))
+        return hashlib.md5(raw.encode()).hexdigest()[:12]
+
+    def _cache_key(self, codes: list, train_days: int, test_days: int, windows: int, data_key: str = "") -> str:
+        base = f"{'-'.join(sorted(codes))}_{train_days}_{test_days}_{windows}"
+        return f"{base}|{data_key}" if data_key else base
 
     def _load_cache(self):
         try:
@@ -54,24 +79,37 @@ class BacktestEngine:
 
     def walk_forward(self, codes: list, train_days=200, test_days=50, windows=3, oos_days=30) -> dict:
         """Walk-Forward + OOS验证: 保留最后oos_days做样本外确认"""
-        ck = self._cache_key(codes, train_days, test_days, windows)
+        from data.sources import get_kline
+        import concurrent.futures as _cf
+
+        # v14.44: 缓存 key 纳入数据段标识 — 先拉K线算 data_key, 数据段变(换日期)→ key变→不命中旧缓存
+        target_codes = codes[:5]
+        total_needed = train_days + test_days * windows + oos_days + 50
+        klines: dict = {}
+        for code in target_codes:
+            try:
+                kline = get_kline(code, total_needed)
+                klines[code] = kline if isinstance(kline, pd.DataFrame) else pd.DataFrame()
+            except Exception as e:
+                logger.warning(f"[WF] {code} 拉K线失败: {e}")
+                klines[code] = pd.DataFrame()
+
+        data_key = self._data_period_key([klines.get(c) for c in sorted(target_codes)])
+        ck = self._cache_key(codes, train_days, test_days, windows, data_key)
         if ck in self._wf_results and all(self._wf_results.get(c, {}).get("kelly") for c in codes):
-            logger.info(f"[WF] cache hit for {codes[:3]}... ({len(codes)} stocks)")
+            logger.info(f"[WF] cache hit for {codes[:3]}... ({len(codes)} stocks) key={ck[:40]}")
             return {c: self._wf_results.get(c, self._wf_results.get(ck, {})) for c in codes}
 
-        from data.sources import get_kline
         all_results = {}
 
         # v14.43: P1-3 WalkForward并行寻优 — 对齐hikyuu OptimalSelector._calculate_parallel
         # 候选股票池并行评估(每股票独立训练/测试窗口), 替代原串行for
-        import concurrent.futures as _cf
 
         def _wf_one(code: str) -> tuple:
             """单股票Walk-Forward评估(线程安全: 各自独立K线/缓存)"""
             try:
-                total_needed = train_days + test_days * windows + oos_days + 50
-                kline = get_kline(code, total_needed)
-                if kline.empty or len(kline) < train_days:
+                kline = klines.get(code)
+                if kline is None or kline.empty or len(kline) < train_days:
                     return code, {"kelly": 0.08, "win_rate": 0.0, "best_strategy": None, "rr": 2.0}
 
                 # 保留OOS段: 最后oos_days作为样本外验证
@@ -116,7 +154,6 @@ class BacktestEngine:
                 logger.warning(f"[WF] {code} fail: {e}")
                 return code, {"kelly": 0.08, "win_rate": 0.0, "best_strategy": None, "rr": 2.0}
 
-        target_codes = codes[:5]
         with _cf.ThreadPoolExecutor(max_workers=min(4, len(target_codes))) as pool:
             for code, best_params in pool.map(_wf_one, target_codes):
                 self._wf_results[code] = best_params
