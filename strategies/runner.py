@@ -1,5 +1,7 @@
 """策略执行器 — 5战法+动量突破+板块轮动+波浪+123/2B · 斯波朗迪"""
 import logging, numpy as np
+# P1-2b (2026-09-28): 零成交死战法显式下线闸门(单一真源 strategies/registry.py)
+from strategies.registry import collect_allowed
 logger = logging.getLogger("aurora.strategies")
 _SECTOR_CACHE = {"data": None, "time": 0}
 
@@ -63,13 +65,15 @@ def analyze_all(candidates: list, kline_override: dict = None, market_regime: st
         if fb > 0: signals.append(("first_board", fb, price))
         # pb = _check_pullback(kline)
         # if pb > 0: signals.append(("pullback", pb, price))  # 注释: 与mean_reversion重叠
-        wp = _check_wave_point(kline)
+        # P1-2b: wave_point 零成交死战法 → 默认不收集(config strategies.disabled)
+        wp = _check_wave_point(kline) if collect_allowed("wave_point") else 0
         if wp > 0: signals.append(("wave_point", wp, price))
 
-        # 均值回归 v1.0
-        from strategies.mean_reversion import check_mean_reversion
-        mr = check_mean_reversion(kline)
-        if mr["signal"]: signals.append(("mean_reversion", mr["score"], price))
+        # 均值回归 v1.0 — P1-2b: 零成交死战法, 默认不收集
+        if collect_allowed("mean_reversion"):
+            from strategies.mean_reversion import check_mean_reversion
+            mr = check_mean_reversion(kline)
+            if mr["signal"]: signals.append(("mean_reversion", mr["score"], price))
 
         # 动量突破 v1.0 (R24新增 — 与wave_point低相关)
         # v14.46: 权重≤0 的信号直接不收集(彻底禁用) — 短线狙击手 momentum=0(实盘0%胜率)
@@ -133,7 +137,8 @@ def analyze_all(candidates: list, kline_override: dict = None, market_regime: st
         if ma > 0: signals.append(("ma_breakout", ma, price))
 
         # 板块轮动加成: 如果是板块推荐股, 加信号分
-        if code == sector_best_code and sector_best_code is not None:
+        # P1-2b: 板块轮动零成交死战法 → 默认不参与加成/收集
+        if collect_allowed("sector_rotation") and code == sector_best_code and sector_best_code is not None:
             bonus = int(sector_score * 0.5)  # 板块轮动50%加成
             if not signals:
                 signals.append(("sector_rotation", max(30, bonus), price))

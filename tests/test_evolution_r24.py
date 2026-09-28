@@ -2,13 +2,32 @@
 import sys, os, json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from pathlib import Path
+import pytest
+import strategies.evolution as _evo
 from strategies.evolution import (
     record_signal, record_trade_result, record_regime,
     record_regime_trade, record_ic,
     get_strategy_health, get_all_health, compute_ic,
     compute_regime_health, compute_half_life, recommend_weights,
 )
-DATA  = Path(__file__).resolve().parent.parent / "data" / "strategy_evolution.json"
+
+# ⭐ P2a (2026-09-28) 修复: 原实现 unlink()/写**生产** data/strategy_evolution.json,
+#   fixture 键名('g' 好策略/'b' 坏策略)污染生产文件 → 复盘报告『策略健康度』表
+#   渲染出单字母策略名 'b'/'g'(状态 dead/warning)。现改为每用例独立 tmp 文件。
+DATA = Path(__file__).resolve().parent.parent / "data" / "strategy_evolution.json"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_evolution_file(tmp_path, monkeypatch):
+    """隔离 strategy_evolution 落盘路径(不碰生产文件)"""
+    global DATA
+    _prod = DATA
+    monkeypatch.setattr(_evo, "DATA", tmp_path / "strategy_evolution_test.json")
+    DATA = _evo.DATA
+    yield
+    DATA = _prod
+
+
 def _clean():
     if DATA.exists(): DATA.unlink()
 def _add_trades(name, wins, losses, regime="bull_strong", scores=None):
@@ -60,4 +79,10 @@ class TestHalfLife:
         assert compute_half_life("t")["half_count"] <= 2
 class TestRecommend:
     def setup_method(self, m): _clean()
-    def test_weights(self): _add_trades("g",8,2);_add_trades("b",1,9);w=recommend_weights();assert w["b"]<=w["g"]
+    def test_weights(self):
+        # P2a: fixture 键名从单字母 g/b 改为真实策略名 —— 单字母键现在会被
+        #   健康度表隔离(它们正是复盘报告渲染出单字母策略名的污染源)。
+        _add_trades("momentum_breakout", 8, 2)
+        _add_trades("wave_point", 1, 9)
+        w = recommend_weights()
+        assert w["wave_point"] <= w["momentum_breakout"]

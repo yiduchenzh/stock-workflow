@@ -51,16 +51,30 @@ def generate_report(engine) -> str:
     lines.append("")
 
     # 4. 策略健康度
+    # ⭐ P2a (2026-09-28) 修复: 原表直接渲染 strategy_evolution.json 的**原始键**,
+    #   于是测试污染键('b'/'g')与哨兵键('unknown')被当成策略名渲染成单字母行。
+    #   现在: ①get_all_health() 内按键名合法性过滤 ②标注显式下线(零成交死战法)
+    #        ③隔离键单列说明(不计入健康度)。
     lines.append("## 4. 策略健康度")
     try:
-        from strategies.evolution import get_all_health
+        from strategies.evolution import get_all_health, get_quarantined_names
+        from strategies.registry import StrategyRegistry, LIVE_STRATEGIES, DELETED
         health = get_all_health()
+        reg = StrategyRegistry.from_config(getattr(engine, "cfg", {}) or {})
         if health:
             lines.append(f"| 策略 | 状态 | 交易数 | 胜率 | 平均PnL | 建议 |")
             lines.append(f"|------|------|--------|------|--------|------|")
             for name, h in sorted(health.items()):
                 wr = f"{h.get('win_rate',0)*100:.0f}%" if h.get('win_rate') is not None else "?"
-                lines.append(f"| {name} | {h.get('status','?')} | {h.get('trades',0)} | {wr} | {h.get('avg_pnl',0):+.2%} | {h.get('recommendation','')} |")
+                tag = " ⏸下线" if reg.is_disabled(name) else ""
+                lines.append(f"| {name}{tag} | {h.get('status','?')} | {h.get('trades',0)} | {wr} | {h.get('avg_pnl',0):+.2%} | {h.get('recommendation','')} |")
+            _q = get_quarantined_names()
+            lines.append("")
+            lines.append(f"- 存活策略(有成交记录): {', '.join(LIVE_STRATEGIES)}")
+            lines.append(f"- 显式下线(零成交死战法): {', '.join(reg.disabled) if reg.disabled else '无'}")
+            lines.append(f"- 已删除(模块/占位键): {', '.join(DELETED)}")
+            if _q:
+                lines.append(f"- ⚠️ 已隔离无效键(测试污染/哨兵键, 不计入健康度): {', '.join(map(repr, _q))}")
         else:
             lines.append("_无策略数据_")
     except Exception as e:

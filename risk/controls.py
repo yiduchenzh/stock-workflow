@@ -1,28 +1,170 @@
 """风控审核 — VaR + 压力测试 + 熔断 · 斯波朗迪+格雷厄姆"""
-import json, logging, numpy as np, time
+import json, logging, numpy as np, time, os
 from pathlib import Path
 logger = logging.getLogger("aurora.risk")
-import os as _risk_os
-_RISK_AGENT = _risk_os.environ.get("AURORA_AGENT")
-if _RISK_AGENT:
-    STATE_FILE = Path(__file__).resolve().parent.parent / "data" / f"risk_state_{_RISK_AGENT}.json"
-else:
-    STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "risk_state.json"
-del _risk_os, _RISK_AGENT
+
+
+# ═══ P2b (2026-09-28) 熔断/净值口径统一 — 路径动态化 + 隔离 ═══
+# 2026-09-27 事故(实测): tests/test_risk.py 调 record_trade()/check_all() → 直接写
+#   生产 data/risk_state.json, 内容 = 测试常量
+#   {"breaker": true, "consec": 3, "daily_pnl": -0.1, "peak_value": 0.0, "prev_day_value": 0.0}
+#   (daily_pnl=-0.1 = -0.05+-0.03+-0.02; breaker_time = 测试运行时刻 18:08:11)
+#   → 生产熔断为 True + peak_value=0.0 → 引擎 step_risk 清空全部开仓计划。
+# 修法: ①路径改为动态函数(与 risk/budget.py 同款), 支持 AURORA_AGENT(6Agent 隔离)与
+#        AURORA_RISK_STATE(测试/验证脚本显式隔离, 见 tests/conftest.py)
+#      ②daily_pnl/consec 统一为「当日」口径(跨日归零)
+#      ③peak_value/prev_day_value 必须来自真实净值序列(_sane_value 限幅 [0.01,5]×capital)
+def _state_file() -> Path:
+    _override = os.environ.get("AURORA_RISK_STATE")
+    if _override:
+        return Path(_override)
+    _agent = os.environ.get("AURORA_AGENT")
+    _base = Path(__file__).resolve().parent.parent / "data"
+    return _base / (f"risk_state_{_agent}.json" if _agent else "risk_state.json")
+
+
+STATE_FILE = _state_file()          # 兼容外部直接引用(单引擎场景)
+
 
 def _load() -> dict:
     # v14.50 P2-B: 显式utf-8(原默认GBK读utf-8文件可能崩)
-    try: return json.loads(STATE_FILE.read_text(encoding="utf-8")) if STATE_FILE.exists() else {}
-    except Exception: return {}
+    try:
+        p = _state_file()
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except Exception:
+        return {}
+
+
 def _save(s: dict) -> None:
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(s, indent=2, ensure_ascii=False), encoding="utf-8")
+    p = _state_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(s, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _cap_of(cfg: dict = None) -> float:
+    try:
+        return float(((cfg or {}).get("risk", {}) or {}).get("capital", 1_000_000) or 1_000_000)
+    except Exception:
+        return 1_000_000
+
+
+def _sane_value(v, capital: float):
+    """净值合理性: [0.01, 5]×capital (与 RiskBudget._sane_value 完全同口径)"""
+    try:
+        v = float(v)
+    except Exception:
+        return None
+    if v <= 0 or v < capital * 0.01 or v > capital * 5.0:
+        return None
+    return v
+
+
+def net_value_series(capital: float = 1_000_000) -> list:
+    """真实净值序列 — 主源 data/pnl_tracker.json 的 daily[].total(升序);
+    次源 data/risk_budget.json 的 peak_value/current_value。全部经 _sane_value 限幅,
+    自动剔除污染点(如 2026-08-07 注入的 20,529,521.75)。"""
+    base = Path(__file__).resolve().parent.parent / "data"
+    out = []
+    try:
+        p = base / "pnl_tracker.json"
+        if p.exists():
+            d = json.loads(p.read_text(encoding="utf-8"))
+            for row in (d.get("daily") or []):
+                v = _sane_value(row.get("total"), capital)
+                if v is not None:
+                    out.append((str(row.get("date") or ""), v))
+    except Exception as e:
+        logger.debug(f"[Risk] net_value_series pnl_tracker: {e}")
+    if len(out) < 2:
+        try:
+            p = base / "risk_budget.json"
+            if p.exists():
+                d = json.loads(p.read_text(encoding="utf-8"))
+                for k in ("peak_value", "current_value"):
+                    v = _sane_value(d.get(k), capital)
+                    if v is not None:
+                        out.append(("", v))
+        except Exception as e:
+            logger.debug(f"[Risk] net_value_series budget: {e}")
+    # 保持**时间顺序**(升序 = 从最早到最新); 峰值由 sync_net_value 用 max() 计算,
+    # 勿在此处排序 —— 否则 vals[-1] 会变成"历史最高净值"而不是"最新净值"。
+    return out
+
+
+def sync_net_value(capital: float = None, current_value: float = None, persist: bool = True) -> dict:
+    """P2b: 用**真实净值序列**刷新 risk_state 的 peak_value/prev_day_value/current_value。
+
+    返回 {peak_value, prev_day_value, current_value, drawdown_pct, source, n_sample}
+    """
+    state = _load()
+    cap = float(capital or state.get("capital") or 1_000_000)
+    series = net_value_series(cap)
+    vals = [v for _, v in series]
+    cur = _sane_value(current_value, cap)
+    if cur is None:
+        cur = vals[-1] if vals else cap
+    peak = max(vals + [cur, cap])
+    # prev_day_value = 序列中最近一次记录日的净值(时间顺序的最后一个样本) = 当日基准
+    prev = vals[-1] if vals else cur
+    state.update({
+        "capital": cap,
+        "peak_value": round(peak, 2),
+        "prev_day_value": round(prev, 2),
+        "current_value": round(cur, 2),
+        "drawdown_pct": round(max(-1.0, min(0.0, (cur - peak) / max(peak, 1))), 6),
+        "net_value_source": "pnl_tracker.daily+risk_budget(经 _sane_value 限幅)",
+        "net_value_n_sample": len(vals),
+        "net_value_synced": time.strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    if persist:
+        _save(state)
+    return {k: state[k] for k in ("peak_value", "prev_day_value", "current_value",
+                                  "drawdown_pct", "net_value_source", "net_value_n_sample")}
 
 def check_all(plans: list, _positions=None, cfg: dict = None) -> tuple:
     state = _load()
     state.setdefault("breaker", False); state.setdefault("consec", 0)
     state.setdefault("daily_pnl", 0.0); state.setdefault("peak_value", 0.0)
     state.setdefault("prev_day_value", 0.0)
+    # ── P2b 口径统一 ──
+    #  ①consec/daily_pnl 是「当日」口径: 跨日自动归零(原实现跨日累加 → 越累越易熔断)
+    #  ②peak_value/prev_day_value 必须是真实净值: 为 0/越界(测试污染) → 现场同步
+    _cap = _cap_of(cfg)
+    _today = time.strftime("%Y-%m-%d")
+    if state.get("daily_pnl_date") != _today:
+        logger.info(f"[Risk] 跨日重置 当日熔断计数: consec {state.get('consec', 0)}→0, "
+                    f"daily_pnl {state.get('daily_pnl', 0)}→0")
+        state["daily_pnl_date"] = _today
+        state["consec_date"] = _today
+        state["daily_pnl"] = 0.0
+        state["daily_pnl_pct"] = 0.0
+        state["consec"] = 0
+        _save(state)
+    if _sane_value(state.get("peak_value"), _cap) is None or \
+            _sane_value(state.get("prev_day_value"), _cap) is None:
+        _nv = sync_net_value(capital=_cap, persist=True)
+        logger.info(f"[Risk] 净值口径修复: peak_value/prev_day_value ← 真实净值序列 "
+                    f"(peak={_nv['peak_value']}, prev_day={_nv['prev_day_value']}, n={_nv['net_value_n_sample']})")
+        state = _load()
+    # ──────── 熔断开关显式化 (2026-09-28 操作清单#1) ────────
+    #   问题: 熔断状态只有"隐式"语义(超24h自愈 / 否则需人工恢复) →
+    #         ① 陈旧熔断(如 09-25 前测试写坏的 breaker=true+peak=0)会静默冻结系统
+    #         ② 想主动冻结时无处可设。现由 cfg.risk.breaker_override 三态显式控制:
+    #         auto(默认)=现状逻辑 / freeze=强制熔断禁开仓 / release=强制解除(仅告警)
+    _ov = str(((cfg or {}).get("risk") or {}).get("breaker_override", "auto") or "auto").strip().lower()
+    if _ov not in ("auto", "freeze", "release"):
+        _ov = "auto"
+    if state.get("breaker_override") != _ov:
+        state["breaker_override"] = _ov
+        _save(state)
+    if _ov == "freeze":
+        return [], [{"type": "breaker", "msg": "熔断开关=freeze(显式冻结; 改回 auto/release 才恢复开仓)"}]
+    if _ov == "release" and state.get("breaker"):
+        logger.warning("[BreakerOverride] 熔断开关=release → 显式解除熔断状态")
+        state["breaker"] = False
+        state["consec"] = 0
+        state["breaker_time"] = 0
+        _save(state)
     if state.get("breaker"):
         from datetime import datetime as _dt
         try:
@@ -103,10 +245,21 @@ def check_all(plans: list, _positions=None, cfg: dict = None) -> tuple:
         if count > 3:
             alerts.append({"type": "concentration", "industry": ind,
                           "msg": f"行业集中度: {ind}持仓{count}只(上限3)"})
-    daily_limit = risk_cfg.get("daily_loss_limit_pct", -3.0) / 100
-    if state.get("daily_pnl", 0) < daily_limit * capital:
-        alerts.append({"type": "daily_loss", 
-                      "msg": f"日亏损{state['daily_pnl']/capital*100:.1f}%超过上限{daily_limit*100:.0f}%, 触发熔断"})
+    # P2b: 日亏损口径统一 —— 用 daily_pnl_pct(百分数, 与画像 daily_loss_limit_pct 同单位)判定,
+    #   同时把 daily_pnl 归一到「金额」口径, 消除「pct 写 / 金额 读」的单位混用。
+    daily_limit_pct = float(risk_cfg.get("daily_loss_limit_pct", -3.0) or -3.0)
+    _dpp = state.get("daily_pnl_pct")
+    if _dpp is None:
+        _dpp = state.get("daily_pnl", 0.0)            # 旧文件: 该字段按百分数记录
+    try:
+        _dpp = float(_dpp or 0.0)
+    except Exception:
+        _dpp = 0.0
+    state["daily_pnl_pct"] = round(_dpp, 4)
+    state["daily_pnl"] = round(_dpp / 100.0 * capital, 2)
+    if _dpp < daily_limit_pct:
+        alerts.append({"type": "daily_loss",
+                      "msg": f"日亏损{_dpp:.1f}%超过上限{daily_limit_pct:.0f}%, 触发熔断"})
         state["breaker"] = True
         state["breaker_time"] = time.time()
         _save(state)
@@ -143,14 +296,46 @@ def check_all(plans: list, _positions=None, cfg: dict = None) -> tuple:
         logger.warning(f"[Compliance] 检查异常: {e}")
     return filtered, alerts
 
-def record_trade(pnl_pct: float):
+def record_trade(pnl_pct: float, capital: float = None):
+    """记录一笔**已平仓**交易结果 (P2b 口径统一)
+
+    pnl_pct 单位 = **百分数**(-0.49 表示 -0.49%), 与画像 daily_loss_limit_pct 同单位。
+    写入: consec(当日连续亏损笔数) / daily_pnl_pct(当日累计, 百分数) /
+          daily_pnl(当日累计, 金额 = pct/100×capital, 与 check_all 的比较口径一致)
+    跨日自动归零。生产唯一调用点: executor/sim_account.py 整仓卖出后(与
+    strategies.evolution.record_trade_result 同一处, 保证两侧口径同源)。
+    """
     state = _load()
-    state["consec"] = state.get("consec", 0) + 1 if pnl_pct < 0 else 0
-    state["daily_pnl"] = round(state.get("daily_pnl", 0) + pnl_pct, 4)
+    today = time.strftime("%Y-%m-%d")
+    cap = float(capital or state.get("capital") or 1_000_000)
+    if state.get("daily_pnl_date") != today:
+        state["daily_pnl_date"] = today
+        state["consec_date"] = today
+        state["daily_pnl"] = 0.0
+        state["daily_pnl_pct"] = 0.0
+        state["consec"] = 0
+    try:
+        p = float(pnl_pct)
+    except Exception:
+        p = 0.0
+    state["consec"] = (state.get("consec", 0) + 1) if p < 0 else 0
+    state["daily_pnl_pct"] = round(float(state.get("daily_pnl_pct", 0.0)) + p, 4)
+    state["daily_pnl"] = round(state["daily_pnl_pct"] / 100.0 * cap, 2)
+    state["capital"] = cap
     _save(state)
 
-def reset():
-    _save({"breaker": False, "consec": 0, "daily_pnl": 0.0, "peak_value": 0.0, "prev_day_value": 0.0})
+
+def reset(capital: float = None, sync_value: bool = False):
+    """清空熔断状态
+
+    P2b: peak_value/prev_day_value 不再写 0(0 = 无效口径, 曾被测试写成 0 后
+    污染生产文件); sync_value=True 时立即用真实净值序列回填。
+    """
+    _save({"breaker": False, "consec": 0, "daily_pnl": 0.0, "daily_pnl_pct": 0.0,
+           "daily_pnl_date": time.strftime("%Y-%m-%d"), "consec_date": time.strftime("%Y-%m-%d"),
+           "breaker_time": 0})
+    if sync_value:
+        sync_net_value(capital=capital, persist=True)
 
 # ── 流动性门槛 (v14.49 修正 2026-09-11) ────────────────────────────────
 # 原实现: avg_dollar = mean(close × volume), 但 get_kline 日K 的 volume 单位是【手】

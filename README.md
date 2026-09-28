@@ -33,8 +33,8 @@ stock-workflow/
 │   ├── naked_k.py            # 裸K (PinBar/InsideBar/Engulf/Fakey/供需区)
 │   ├── indicator_system.py   # MACD背离+KDJ+BOLL
 │   ├── kline_patterns.py     # 八大K线组合+涨停板分析
-│   ├── mtf_resonance.py      # 多周期共振(Elder三滤网)
-│   ├── elliott_wave.py       # 艾略特波浪
+│   ├── mtf_resonance.py      # 多周期共振(Elder三滤网) [P1-2b: 零成交→显式下线]
+│   # (elliott_wave.py 已于 2026-09-28 删除: 模块零引用 + 自声明 NotYetConnected)
 │   ├── reflexivity.py        # 索罗斯反身性
 │   ├── confirmation.py       # 多信号确认(三道防线)
 │   ├── regime.py             # 市场状态自适应

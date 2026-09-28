@@ -35,6 +35,10 @@ screening:
     min_listed_days: 100
 
 strategies:
+  # P1-2b (2026-09-28): 零成交死战法显式下线(单一真源 strategies/registry.py)
+  #   审计依据 data/beliefs.json: 这 4 个战法全程 trades=0; 置 [] 即恢复旧行为。
+  #   注: elliott_wave 模块 与 chan_/naked_ 占位键已真删(不是配置项)。
+  disabled: [wave_point, mean_reversion, sector_rotation, mtf_resonance]
   first_board:
     enabled: true
     lookback: 60
@@ -54,6 +58,11 @@ strategies:
 risk:
   max_positions: 5
   risk_per_trade_pct: 1.0
+  # ── 熔断开关(2026-09-28 操作清单#1: 显式三态, 替代"隐式推断") ──
+  #   auto    = 现状(触发后需人工恢复, 超24h自动重置)
+  #   freeze  = 强制冻结: 一律禁开新仓(想停手时用这个, 不用改 state 文件)
+  #   release = 强制解除: 忽略熔断状态(仅告警; 确认是陈旧误触发时快速恢复)
+  breaker_override: auto
   daily_loss_limit_pct: -3.0
   max_drawdown_pct: -10.0
   max_consecutive_losses: 3
@@ -69,6 +78,27 @@ risk:
     hard_pct: 5.0
   take_profit:
     rr_ratio: 2.0
+
+# P1-2a (2026-09-28): 单票暴露/开仓闸 单一真源 (risk/exposure.py)
+#   缺省 = 2026-09-28 现状(历史可比, 默认行为逐笔不变)
+#   诊断: 建仓时日志打印 [Expose] 目标暴露 / 闸值 / 当前实际暴露 / 为什么没买
+exposure:
+  trend_target_pct:            # 趋势状态 -> 单票目标暴露(再受单票上限截断)
+    up: 0.8
+    range: 0.5
+    down: 0.3
+  max_position_pct: null       # null -> 跟随 agent_trading_style / risk.max_position_pct(0.28 兜底)
+  max_positions: null          # null -> 跟随 risk.max_positions
+  kelly_scale: 1.0             # 提曝光旋钮(计划层): 放大计划 Kelly 份额; 1.0=现状
+  scale: 1.0                   # 提曝光旋钮: >1 放大目标暴露; 1.0=现状
+  # ⭐ 提曝光护栏(操作清单#2): scale/kelly_scale >1 必须把本项置 true, 否则被钳制回 1.0。
+  #   依据: 5 账户实测暴露仅 1.3%~11.1%, 但无任何战法为稳定正期望
+  #        (prev_close_B 118笔/胜率30%/均值-1.20% 已判 dead; chan_buy1 34/100 dead)
+  #        → 放大暴露只会放大噪声。实测影响面(开到上限): 单账户 9~27万 → 42~48万。
+  allow_raise: false
+  min_cash_reserve_pct: 0.0    # 现金保留比例(0=现状)
+  enforce_plan_cap: false      # true -> plan_positions 也做单票上限截断(默认关=现状)
+  diagnostics: true            # 建仓决策诊断日志
 
 notify:
   sct_token: ""

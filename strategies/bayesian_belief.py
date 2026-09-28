@@ -16,15 +16,19 @@ PROJ = Path(__file__).resolve().parent.parent
 BELIEFS_PATH = PROJ / "data" / "beliefs.json"
 
 # 默认先验: 每个策略Beta分布参数 (alpha=成功次数+1, beta=失败次数+1)
+# ⭐ P1-2b (2026-09-28): 只保留"有成交记录"的策略(审计 data/beliefs.json trades>0)。
+#   删除 7 个零成交死战法/占位键: sector_rotation / wave_point / mean_reversion /
+#   elliott_wave / mtf_resonance (模块已删或显式下线) 与 chan_ / naked_ (占位通配键,
+#   它们根本不是策略 —— 原来会被 _load_beliefs 播种进 beliefs.json, 报告里显示成假策略)。
+#   通配先验改放 _WILDCARD_PRIORS: 仅用于前缀模糊匹配继承, **不写入 beliefs.json**。
 _DEFAULT_BELIEFS = {
     "momentum_breakout": {"alpha": 6, "beta": 4, "trades": 0, "last_update": ""},
-    "sector_rotation": {"alpha": 5, "beta": 5, "trades": 0, "last_update": ""},
-    "wave_point": {"alpha": 5, "beta": 5, "trades": 0, "last_update": ""},
-    "mean_reversion": {"alpha": 4, "beta": 6, "trades": 0, "last_update": ""},
+}
+
+# 通配先验(前缀继承, 不持久化) —— 原 chan_/naked_ 两个占位键的先验值
+_WILDCARD_PRIORS = {
     "chan_": {"alpha": 5, "beta": 5, "trades": 0, "last_update": ""},
     "naked_": {"alpha": 4, "beta": 6, "trades": 0, "last_update": ""},
-    "elliott_wave": {"alpha": 4, "beta": 6, "trades": 0, "last_update": ""},
-    "mtf_resonance": {"alpha": 5, "beta": 5, "trades": 0, "last_update": ""},
 }
 
 
@@ -38,6 +42,15 @@ def _load_beliefs() -> dict:
             for name, default in _DEFAULT_BELIEFS.items():
                 if name not in data:
                     data[name] = dict(default)
+            # ⭐ P1-2b 守护: 丢弃已删除的占位键/垃圾键(兼容旧污染文件)
+            try:
+                from strategies.registry import DELETED, is_valid_strategy_name
+                for _k in list(data):
+                    if _k in DELETED or not is_valid_strategy_name(_k):
+                        logger.warning(f"[Soul] beliefs 丢弃无效/已删键: {_k!r}")
+                        data.pop(_k, None)
+            except Exception:
+                pass
             return data
         else:
             return {k: dict(v) for k, v in _DEFAULT_BELIEFS.items()}
@@ -68,14 +81,20 @@ def update_belief(strategy_name: str, outcome: bool) -> dict:
     try:
         beliefs = _load_beliefs()
 
-        # 模糊匹配: 如果精确名称不存在, 尝试前缀匹配
+        # 模糊匹配: 如果精确名称不存在, 尝试前缀匹配(通配先验优先, 再兼容旧文件的 "xxx_" 键)
         if strategy_name not in beliefs:
             matched = False
-            for key in beliefs:
-                if key.endswith("_") and strategy_name.startswith(key.rstrip("_")):
-                    beliefs[strategy_name] = dict(beliefs[key])
+            for key, prior in _WILDCARD_PRIORS.items():
+                if strategy_name.startswith(key.rstrip("_")):
+                    beliefs[strategy_name] = dict(prior)
                     matched = True
                     break
+            if not matched:
+                for key in beliefs:
+                    if key.endswith("_") and strategy_name.startswith(key.rstrip("_")):
+                        beliefs[strategy_name] = dict(beliefs[key])
+                        matched = True
+                        break
             if not matched:
                 beliefs[strategy_name] = {"alpha": 3, "beta": 3, "trades": 0, "last_update": ""}
 
@@ -130,10 +149,16 @@ def get_adjusted_kelly(base_kelly: float, strategy: str, regime: str) -> float:
         if strategy in beliefs:
             entry = beliefs[strategy]
         else:
-            for key in beliefs:
-                if key.endswith("_") and strategy.startswith(key.rstrip("_")):
-                    entry = beliefs[key]
+            # P1-2b: 通配先验(不持久化的 chan_/naked_)优先, 再兼容旧文件键
+            for key, prior in _WILDCARD_PRIORS.items():
+                if strategy.startswith(key.rstrip("_")):
+                    entry = prior
                     break
+            if entry is None:
+                for key in beliefs:
+                    if key.endswith("_") and strategy.startswith(key.rstrip("_")):
+                        entry = beliefs[key]
+                        break
 
         if entry is None or entry["trades"] < 3:
             # 样本不足, 使用原始凯利

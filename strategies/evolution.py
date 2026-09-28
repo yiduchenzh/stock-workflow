@@ -256,12 +256,31 @@ def get_strategy_health(strategy_name: str) -> dict:
     }
 
 
-def get_all_health() -> dict:
-    """获取所有策略的健康状态"""
-    result = {}
-    for name in _load():
-        result[name] = get_strategy_health(name)
+def get_all_health(include_quarantined: bool = False) -> dict:
+    """获取所有策略的健康状态
+
+    ⭐ P2a (2026-09-28) 修复: 复盘报告『策略健康度』表曾渲染出单字母策略名
+    ('b'/'g', 状态 dead/warning) 与 'unknown'。
+    根因(已核实): tests/test_evolution_r24.py 直接写生产 data/strategy_evolution.json
+    (fixture 键名就叫 'g'/'b'), 且 executor/sim_account.py 在无策略证据时回落写
+    'unknown'。原实现把文件里**任何键**都当策略名渲染 → 单字母/哨兵键混进报告。
+    现在: ①测试侧隔离(见 tests/) ②此处按策略名合法性过滤, 隔离键单列(不计入健康度)。
+    """
+    from strategies.registry import filter_health_rows
+    valid, quarantined = filter_health_rows(_load())
+    if quarantined:
+        logger.warning(f"[Evolve] 健康度隔离无效键(不计入策略健康度): {sorted(quarantined)}")
+    result = {name: get_strategy_health(name) for name in valid}
+    if include_quarantined:
+        for name in quarantined:
+            result[name] = get_strategy_health(name)
     return result
+
+
+def get_quarantined_names() -> list:
+    """被隔离的无效键(测试污染/哨兵键) — 报告单列说明用"""
+    from strategies.registry import filter_health_rows
+    return sorted(filter_health_rows(_load())[1])
 
 
 def recommend_weights() -> dict:

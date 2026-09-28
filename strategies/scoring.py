@@ -31,7 +31,11 @@ def composite_score(analysis, market_regime, market_score, mtf_scheme="A"):
             mtf_val = a_mtf["daily"] * daily_w + a_mtf.get("m30", 50) * m30_w + a_mtf.get("m5", 0) * m5_w
             mtf_score = min(100, max(0, mtf_val)) * 0.15
         else:
-            if mtf_scheme == "B":
+            # P1-2b (2026-09-28): 零成交死战法 mtf_resonance 默认下线 → 评分加成 0
+            from strategies.registry import collect_allowed as _ca
+            if not _ca("mtf_resonance"):
+                mtf = {"score": 0, "resonance": "none", "disabled": True}
+            elif mtf_scheme == "B":
                 from strategies.mtf_resonance_v2 import check_mtf_resonance_v2
                 try:
                     mtf = check_mtf_resonance_v2(kline_df, a.get("code")) if kline_df is not None else {"score": 0}

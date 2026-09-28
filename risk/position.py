@@ -27,7 +27,8 @@ def signal_allowed(strategy: str, signal_allow: dict) -> bool:
     return False
 
 def plan_positions(scores: list, capital: float, cfg: dict, bt_engine=None,
-                   profile_name: str = None, signal_allow: dict = None) -> list:
+                   profile_name: str = None, signal_allow: dict = None,
+                   exposure_policy=None) -> list:
     """仓位计划 — 动态Kelly(回测验证) + GARCH波动率 + 移动止盈
 
     v14.47 (2026-08-14 账户画像审计修复 P0): 信号白名单过滤
@@ -62,7 +63,23 @@ def plan_positions(scores: list, capital: float, cfg: dict, bt_engine=None,
         confidence = s.get("confidence", 0.5)
         kelly *= (0.5 + confidence * 0.5)
         price = s.get("entry_price", s.get("price", 10)) or 10
-        shares = max(100, int(capital * kelly / price / 100) * 100)
+        # P1-2a: Kelly 份额旋钮(默认 1.0 = 现状逐笔不变) — 治『3个计划只占6.3%资金』
+        if exposure_policy is not None:
+            _ks = float(getattr(exposure_policy, "kelly_scale", 1.0) or 1.0)
+            if _ks != 1.0:
+                kelly *= _ks
+        # P1-2a (2026-09-28): 单票上限截断 -> 与引擎建仓/风控共用 risk.exposure 单一真源。
+        #   enforce_plan_cap=False(默认) -> 不截断 = 改动前行为逐笔不变
+        #   (kelly 上界 0.25*1.0=0.25 < 0.28 兜底上限, 默认路径本就不触发);
+        #   打开后计划份额 <= 单票上限(如新手入门 max_position_pct=0.10)。
+        if exposure_policy is not None:
+            from risk.exposure import plan_gate
+            shares, _capped = plan_gate(exposure_policy, capital, price, kelly)
+            if _capped:
+                logger.info(f"[PlanCap] {s.get('code','')} 计划份额被单票上限 "
+                            f"{exposure_policy.gate_pct_display()} 截断: kelly={kelly*100:.1f}%")
+        else:
+            shares = max(100, int(capital * kelly / price / 100) * 100)
         sl = s.get("stop_loss", price * 0.95)
         tp = price * (1 + rr * risk_cfg.get("risk_per_trade_pct", 1.0) / 100)
         plans.append({

@@ -133,35 +133,22 @@ class TestEvolutionOnRealData:
             record_signal, record_trade_result, record_regime, record_ic,
             get_strategy_health, get_all_health, compute_ic, compute_half_life
         )
-        import os
-        f = os.path.join(os.path.dirname(__file__), "..", "data", "strategy_evolution.json")
-        backup = None
-        if os.path.exists(f):
-            import shutil
-            backup = f + ".bak"
-            shutil.copy2(f, backup)
+        # 2026-09-28 测试卫生: 原实现自行 backup/restore(甚至 os.remove)**生产**
+        #   data/strategy_evolution.json。现由 tests/conftest.py 统一把
+        #   strategies.evolution.DATA 隔离到 tmp(会话级), 这里不再碰生产文件。
+        #   fixture 键也从 'test_real'(哨兵味) 改为真实策略名, 与健康度表口径一致。
+        df = self.data.get("600519", {}).get("kline")
+        if df is not None:
+            from strategies.momentum_breakout import check_momentum_breakout
+            for i in range(20, min(40, len(df))):
+                sub = df.iloc[:i].copy()
+                r = check_momentum_breakout(sub)
+                record_signal("momentum_breakout", r["score"])
+                record_ic("momentum_breakout", r["score"], 1.0 if r["signal"] else -1.0)
+                record_regime("momentum_breakout", "range")
+                record_trade_result("momentum_breakout", 0.02 if r["signal"] else -0.01, r["signal"])
 
-        try:
-            # Run strategy on real data and record
-            df = self.data.get("600519", {}).get("kline")
-            if df is not None:
-                from strategies.momentum_breakout import check_momentum_breakout
-                for i in range(20, min(40, len(df))):
-                    sub = df.iloc[:i].copy()
-                    r = check_momentum_breakout(sub)
-                    record_signal("test_real", r["score"])
-                    record_ic("test_real", r["score"], 1.0 if r["signal"] else -1.0)
-                    record_regime("test_real", "range")
-                    record_trade_result("test_real", 0.02 if r["signal"] else -0.01, r["signal"])
-
-                h = get_strategy_health("test_real")
-                assert h["status"] in ("new", "warning", "healthy", "critical", "dead")
-                all_h = get_all_health()
-                assert len(all_h) > 0
-        finally:
-            if backup and os.path.exists(backup):
-                import shutil
-                shutil.copy2(backup, f)
-                os.remove(backup)
-            elif os.path.exists(f):
-                os.remove(f)
+            h = get_strategy_health("momentum_breakout")
+            assert h["status"] in ("new", "warning", "healthy", "critical", "dead")
+            all_h = get_all_health()
+            assert len(all_h) > 0

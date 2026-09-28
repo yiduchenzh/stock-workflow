@@ -15,6 +15,9 @@ from strategies.regime import filter_strategies_by_regime, get_regime_config, ge
 from strategies.confirmation import confirm_entry
 from strategies.scoring import composite_score, MLFactorScorer
 from strategies.evolution import get_all_health, record_signal, record_trade_result
+# P1-2a/P1-2b (2026-09-28): 单票暴露与策略存活 -> 单一真源
+from risk.exposure import load_policy as load_exposure_policy, ExposureDiag
+from strategies.registry import StrategyRegistry, set_registry
 from strategies.behavior import record_entry, diagnose
 # [Soul] 5个灵魂模块
 from strategies.market_memory import market_memory
@@ -226,6 +229,93 @@ class AuroraEngine:
         except Exception:
             pass
         return max(0, min(100, score))
+
+    # ──────── P1-2a: 单票暴露/开仓闸 单一真源 + 运行时诊断 ────────
+    def _exposure_policy(self):
+        """暴露策略(单一真源) — 懒构建 + 缓存"""
+        pol = getattr(self, "_exposure", None)
+        if pol is None:
+            try:
+                pol = load_exposure_policy(self.cfg, getattr(self, "agent_trading_style", {}),
+                                           getattr(self, "profile_name", None))
+            except Exception as _e:
+                self.log.debug(f"[Expose] policy fallback: {_e}")
+                pol = load_exposure_policy(self.cfg)
+            self._exposure = pol
+        return pol
+
+    def _refresh_exposure_policy(self):
+        self._exposure = None
+        return self._exposure_policy()
+
+    def _registry_obj(self):
+        reg = getattr(self, "_strategy_registry", None)
+        if reg is None:
+            try:
+                reg = StrategyRegistry.from_config(self.cfg)
+            except Exception:
+                reg = StrategyRegistry()
+            self._strategy_registry = reg
+            set_registry(reg)          # 信号收集闸门(runner/scoring)同步同一真源
+            self.log.info(reg.summary())
+        return reg
+
+    def _log_exposure_diag(self):
+        """建仓决策汇总: 目标暴露 X% / 闸值 Y% / 当前实际暴露 Z% / 为什么没买"""
+        diag = getattr(self, "_xdiag", None)
+        if diag is None:
+            return
+        diag.policy = self._exposure_policy()
+        try:
+            self.log.info("  " + diag.summary(getattr(self, "account", None)))
+        except Exception as _e:
+            self.log.debug(f"[Expose] diag: {_e}")
+
+    def _log_plan_exposure_diag(self):
+        """计划层暴露诊断 — 目标暴露 vs 账户实际暴露, 解释 98% 持币"""
+        try:
+            pol = self._exposure_policy()
+            acc = getattr(self, "account", None)
+            plans = self.plans or []
+            planned_pct = 0.0
+            for p in plans:
+                _px = float(p.get("entry_price", 0) or 0)
+                planned_pct += float(p.get("shares", 0) or 0) * _px / max(self.capital, 1)
+            actual = 0.0
+            if acc is not None:
+                _tv = float(getattr(acc, "total_value", 0) or 0)
+                _pv = sum(float(p.get("shares", 0) or 0) *
+                          float(p.get("current_price") or p.get("avg_cost", 0) or 0)
+                          for p in (acc.positions or {}).values())
+                actual = _pv / _tv if _tv > 0 else 0.0
+            _trend = getattr(self, "market_regime", "range")
+            self.log.info(
+                f"  [Expose] 目标暴露 {pol.target_exposure(_trend)*100:.0f}%(单票上限 {pol.gate_pct_display()}, "
+                f"scale={pol.scale:g}) / 目标总仓位 {pol.target_total_exposure(_trend)*100:.0f}%"
+                f"({pol.max_positions}票) / 本轮计划 {len(plans)}笔({planned_pct*100:.1f}%资金) / "
+                f"当前实际暴露 {actual*100:.1f}% / 未买原因: "
+                + (self._plan_skip_reason() or "计划已生成"))
+        except Exception as _e:
+            self.log.debug(f"[Expose] plan diag: {_e}")
+
+    def _plan_skip_reason(self):
+        """0 计划时给出可归因的原因(候选漏斗哪一层断)"""
+        try:
+            n_cand = len(getattr(self, "candidates", []) or [])
+            n_scr = len(getattr(self, "screened", []) or [])
+            n_ana = len(getattr(self, "analysis", []) or [])
+            n_sig = len([a for a in (getattr(self, "analysis", []) or []) if a.get("signal")])
+            n_score = len(getattr(self, "scores", []) or [])
+            if n_cand == 0:
+                return "候选池为空(选股链路)"
+            if n_scr == 0:
+                return f"候选{n_cand}->CANSLIM 0(筛选层全灭)"
+            if n_sig == 0:
+                return f"候选{n_cand}->筛选{n_scr}->分析{n_ana}->0信号(信号层)"
+            return (f"候选{n_cand}->筛选{n_scr}->分析{n_ana}(信号{n_sig})->评分{n_score}"
+                    f"->计划0(白名单/时间窗/仓位规划层)")
+        except Exception:
+            return ""
 
     # ──────── step 1: market state ────────
     def step_market(self):
@@ -510,6 +600,7 @@ class AuroraEngine:
 
     # ──────── step 4: analyze + signals ────────
     def step_analyze(self):
+        self._registry_obj()          # P1-2b: 下线策略闸门(单一真源) — 收集前生效
         candidates = getattr(self, "screened", None) or self.candidates or []
         if not candidates:
             self.analysis = []
@@ -949,7 +1040,9 @@ class AuroraEngine:
             pass
         self.plans = plan_positions(self.scores, self.capital, self.cfg, bt,
                                     profile_name=getattr(self, 'profile_name', None),
-                                    signal_allow=_signal_allow)
+                                    signal_allow=_signal_allow,
+                                    exposure_policy=self._exposure_policy())
+        self._log_plan_exposure_diag()
         # [Opt] 时间窗口开仓规则 — regime自适应
         # bull_strong/bull_weak: 全天开仓(强势行情)
         # range: 盘中正常开仓
@@ -1658,6 +1751,7 @@ class AuroraEngine:
                 self.positions = dict(acc.positions)
                 # ── 空仓建仓: 候选池开盘3分钟站稳昨收 → 趋势分层仓位（web 同款）──
                 if not acc.positions and _pool:
+                    self._xdiag = ExposureDiag(self._exposure_policy())
                     # ⭐ 2026-08-10 市场护栏（与 web 一致）: 大盘跌≤-1% → 暂停新开仓
                     _guard_ok = True
                     try:
@@ -1686,6 +1780,7 @@ class AuroraEngine:
                             for _c in _ranked:
                                 code = _c.get("code", "")
                                 if code in self._pc_just_sold:
+                                    self._xdiag.note(f"{code}: 当日清仓黑名单")
                                     continue
                                 # ⭐ 2026-08-16 P0-② 强势池护栏在【最终买入点】再守一道:
                                 #   runner.py:166-174 信号层已拦 prev_close_B(仅 strong_grade∈{A,B} 或
@@ -1697,16 +1792,20 @@ class AuroraEngine:
                                 if _g not in ("A", "B") and _sc < 70 and _g != "":
                                     logger.debug(f"[PrevCloseEXEC] {code}: 强势池护栏拦截建仓 "
                                                  f"(strong_grade={_g} score={_sc})")
+                                    self._xdiag.note("强势池护栏(C/D级)")
                                     continue
                                 m5 = fetch_min5_today(code)
                                 if len(m5) < 3:
+                                    self._xdiag.note("5分K不足3根")
                                     continue
                                 kdf = get_kline(code, 30)
                                 if kdf is None or getattr(kdf, "empty", True) or len(kdf) < 3:
+                                    self._xdiag.note("日K不足")
                                     continue
                                 closes = [float(x) for x in kdf["close"].values]
                                 prev_close = float(closes[-2])
                                 if prev_close <= 0:
+                                    self._xdiag.note("昨收价异常")
                                     continue
                                 # ⭐ 2026-08-16 P0-② auto 自动选买入模式(按标的波动/趋势):
                                 #   same_close=当日收盘买(高波动强趋势, 吃隔夜跳空) / next_open=次日开盘买。
@@ -1728,27 +1827,27 @@ class AuroraEngine:
                                     _avg5v = 0.0
                                 ok, price = check_entry(m5, prev_close, avg5_vol=_avg5v, vol_confirm=1.0)
                                 if not ok:
+                                    self._xdiag.note("未站稳昨收/量能不足")
                                     continue
                                 _tr = trend_state(closes)
                                 # ⭐ 2026-08-11 对齐实盘 v14.55/回测 entry_trend_gate=1: 下降趋势禁建仓（逆势接刀）
                                 if _tr == "down":
+                                    self._xdiag.note("下降趋势禁建仓(逆势接刀)")
                                     continue
                                 # ⭐ 2026-08-14 P0修复(本周实盘审计): 趋势分层仓位与风控单笔上限取min
                                 #   原逻辑: shares = cash × TREND_TARGET_PCT(up=0.8) → 603232 建仓 42,500股
                                 #   = 76.7万(80%仓位)! 超 max_position_pct=28% 上限 → 单笔亏5.64%就-4.3万
                                 #   web 端 v14.52 已修(_single_position_cap), 工作流漏同步
                                 #   修复: target = min(趋势分层目标, 风控单笔上限)  (对齐 web _single_position_cap)
-                                _target = TREND_TARGET_PCT.get(_tr, 0.5)
-                                try:
-                                    _mpp = float((getattr(self, "agent_trading_style", {}) or {})
-                                                 .get("max_position_pct",
-                                                      (getattr(self, "cfg", {}) or {}).get("risk", {})
-                                                      .get("max_position_pct", 0.28)))
-                                    if _mpp > 0:
-                                        _target = min(_target, _mpp)
-                                except Exception:
-                                    pass
-                                shares_buy = int(acc.cash * _target / price / 100) * 100
+                                # P1-2a (2026-09-28): 目标暴露/单票上限 -> 单一真源 risk.exposure.load_policy
+                                #   默认参数(scale=1.0, 无 exposure.max_position_pct 覆盖) 与改动前
+                                #   `min(TREND_TARGET_PCT.get(_tr,0.5), max_position_pct)` 逐笔一致
+                                #   (证据: tests/test_exposure_single_source.py 全矩阵对照)
+                                _xpol = self._exposure_policy()
+                                _target = _xpol.target_exposure(_tr)
+                                shares_buy = _xpol.size_entry(acc.cash, price, _tr)
+                                if shares_buy < 100:
+                                    self._xdiag.note(f"{code}: 目标暴露{_target*100:.0f}% 但现金不足1手")
                                 if shares_buy >= 100:
                                     acc.buy(code, price, shares_buy,
                                             f"昨收开盘3分钟站稳建仓({_tr})",
@@ -1759,10 +1858,12 @@ class AuroraEngine:
                                                      f"趋势{_tr} entry_mode={_entry_mode}"
                                                      + (" (same_close→引擎无尾盘收盘调度, 保守回落 native 次日开盘路径)"
                                                         if _entry_mode == "same_close" else ""))
+                                    self._xdiag.note_buy(shares_buy, _tr, _target)
                                     self.positions = dict(acc.positions)
                                     break
                         except Exception as e:
                             self.log.debug(f"  [PrevCloseEXEC] 建仓: {e}")
+                    self._log_exposure_diag()
         except Exception:
             pass
         # T+0日内做T

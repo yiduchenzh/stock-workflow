@@ -21,7 +21,12 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger("aurora.prev_close_exec")
 
 # ═══ 常量（与 web auto_trader.py 完全一致）═══
-TREND_TARGET_PCT: Dict[str, float] = {"up": 0.8, "range": 0.5, "down": 0.3}
+# P1-2a (2026-09-28): 『趋势->目标暴露』的**单一真源**已收敛到 risk/exposure.py。
+#   此处保留同名别名(向后兼容既有 import), 数值仍为 {up:0.8, range:0.5, down:0.3}。
+#   建仓请用 risk.exposure.load_policy(...).target_exposure(trend)
+from risk.exposure import DEFAULT_TREND_TARGET_PCT as _EXPO_TREND_TARGET
+
+TREND_TARGET_PCT: Dict[str, float] = dict(_EXPO_TREND_TARGET)
 T0_PCT: float = 0.3            # 做T用底仓30%
 STOP_SINGLE_PCT: float = 9.0   # 单笔止损（与回测 BEST_PARAMS 对齐）
 ADD_VOL: float = 1.0           # 加仓放量倍数

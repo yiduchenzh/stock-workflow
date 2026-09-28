@@ -401,11 +401,26 @@ class SimAccount(BaseExecutor):
             if code not in self.positions:
                 from strategies.evolution import record_trade_result
                 from backtest.engine import get_backtest_engine
-                strategy_name = (buy_ctx or {}).get("strategy") or buy_reason or "unknown"
-                _pnl_frac = round(pnl_pct / 100.0, 4)  # 转小数(0.03=3%), 与evolution口径一致
-                record_trade_result(strategy_name, _pnl_frac, pnl > 0)
-                get_backtest_engine().update_stats(strategy_name, _pnl_frac, pnl > 0)
-                logger.info(f"[Evolve] {code} 平仓记录: strategy={strategy_name} pnl={_pnl_frac:+.2%}")
+                # ⭐ P2a (2026-09-28): 原实现 `... or buy_reason or "unknown"` 会把
+                #   「中文卖出原因」或哨兵键 'unknown' 记成策略名 → 复盘报告『策略健康度』
+                #   表出现无意义的 'unknown' 行。无策略证据 = 不记账(只留日志)。
+                strategy_name = ((buy_ctx or {}).get("strategy") or "").strip() or None
+                if not strategy_name:
+                    logger.info(f"[Evolve] {code} 平仓无策略证据, 跳过 strategy_evolution 记录 "
+                                f"(pnl={round(pnl_pct / 100.0, 4):+.2%})")
+                else:
+                    _pnl_frac = round(pnl_pct / 100.0, 4)  # 转小数(0.03=3%), 与evolution口径一致
+                    record_trade_result(strategy_name, _pnl_frac, pnl > 0)
+                    get_backtest_engine().update_stats(strategy_name, _pnl_frac, pnl > 0)
+                    logger.info(f"[Evolve] {code} 平仓记录: strategy={strategy_name} pnl={_pnl_frac:+.2%}")
+                    # ⭐ P2b (2026-09-28): 熔断口径统一 —— 同一处把真实平仓结果喂给 risk_state
+                    #   (原生产链路**没有任何** record_trade 调用者 → consec/daily_pnl 永不更新,
+                    #    只有 pytest 会写它们 = 生产熔断口径完全失真)
+                    try:
+                        from risk.controls import record_trade as _risk_record_trade
+                        _risk_record_trade(pnl_pct)
+                    except Exception as _re:
+                        logger.debug(f"[Evolve] risk.controls.record_trade: {_re}")
         except Exception as _e:
             logger.debug(f"[Evolve] {code} 平仓记录失败: {_e}")
         logger.info(f"[SIM SELL] {code} {shares}sh @{fill_price:.2f} PnL={pnl:+.0f} "
