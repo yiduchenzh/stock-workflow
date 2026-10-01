@@ -22,10 +22,23 @@ class MultiAgentCoordinator:
             self.agents[name] = TraderAgent(name)
 
     def clear_all_data(self):
-        """清除所有Agent的历史数据"""
+        """清除所有Agent的历史数据
+
+        2026-10-01 修复(P0): 原实现**直接 unlink 无归档** → 实测后果:
+          08-12 之前的画像/主sim 成交流水被永久删除, 而 pnl_tracker.json(07-04 起) 仍在,
+          造成"交易记录只从 08-13 起"的假象 —— 前四轮复盘据此把 08-13 误判为上线日,
+          整个亏损归属期算错。现改为 **先归档到 data/_archived_clears/<时间戳>/ 再清除**。
+        """
+        import shutil as _sh, datetime as _dt
         data_root = Path(__file__).resolve().parent.parent / "data"
+        arch = data_root / "_archived_clears" / _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        arch.mkdir(parents=True, exist_ok=True)
         count = 0
         for agent_dir in data_root.glob("agent_*/"):
+            try:
+                _sh.copytree(str(agent_dir), str(arch / agent_dir.name), dirs_exist_ok=True)
+            except Exception as e:
+                logger.warning(f"[Coord] 归档失败 {agent_dir.name}: {e}")
             for f in agent_dir.iterdir():
                 f.unlink()
                 count += 1
@@ -34,9 +47,13 @@ class MultiAgentCoordinator:
         for old_f in ["sim_state.json", "sim_trades.json", "bt_vs_live.json"]:
             p = data_root / old_f
             if p.exists():
+                try:
+                    _sh.copy2(str(p), str(arch / old_f))
+                except Exception as e:
+                    logger.warning(f"[Coord] 归档失败 {old_f}: {e}")
                 p.unlink()
                 count += 1
-        logger.info(f"[Coord] 已清除{count}个旧数据文件")
+        logger.info(f"[Coord] 已清除{count}个旧数据文件 (归档于 {arch})")
         # 重新初始化
         self.__init__()
         return count

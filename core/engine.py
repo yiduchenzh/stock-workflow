@@ -1551,12 +1551,19 @@ class AuroraEngine:
                         amhd = agent_style.get("max_hold_days", 10)
                         min_hold = max(0, min(amhd // 3, min_hold_days))
                         if held < min_hold:
-                            self.log.info(f"  [HoldProtect] {code}: 仅持{held}天<{min_hold}, 跳过卖出({a_type})")
+                            # 2026-10-01 修复: 原实现只 continue 本循环 → 下面第 2 个执行循环照样卖
+                            #   ("跳过卖出" 只是日志谎言)。改为打标记, 由执行循环跳过。
+                            self.log.info(f"  [HoldProtect] {code}: 仅持{held}天<{min_hold}, 本次跳过卖出({a_type})")
+                            a["_hold_block"] = True
                             continue
                 except:
                     pass
         acc = getattr(self, "account", None)
         for a in self.alerts:
+            if a.get("_hold_block"):
+                # 2026-10-01: 承接上一循环的持仓保护标记 (此前该保护完全失效)
+                self.log.info(f"  [HoldProtect] {a.get('code')}: 已标记, 执行循环跳过({a.get('type')})")
+                continue
             a_type = a.get("type", "")
             code = a.get("code", "")
             price = a.get("price", 0)

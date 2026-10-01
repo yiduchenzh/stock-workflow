@@ -31,6 +31,13 @@ class TestAccountVerify:
         assert len(alerts) > 0
 
 class TestHTBridge:
+    # 2026-10-01 修复: 本类 test_buy_sell 会经 SimBroker._log 写生产 data/ht_trade_log.json
+    #   (实测 500 条全是 600519@1500/1520 的测试单, 每次跑 pytest 都增长) → 重定向到 tmp
+    @pytest.fixture(autouse=True)
+    def _isolate_trade_log(self, tmp_path, monkeypatch):
+        import executor.ht_bridge as _hb
+        monkeypatch.setattr(_hb, "TRADE_LOG", tmp_path / "ht_trade_log.json", raising=True)
+
     def test_import(self):
         from executor.ht_bridge import HTTradeExecutor, SimBroker, create_executor
         e = create_executor(mode="sim")
