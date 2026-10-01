@@ -155,6 +155,48 @@ class SimAccount(BaseExecutor):
             "mcap_hundred_million": mcap_hundred_million,
         }
 
+    def _apply_slip_mode(self, res: dict, code: str, shares: int, price: float,
+                         is_buy: bool) -> dict:
+        """⭐ 2026-10-01 滑点口径校准(实测, 月度复盘)
+
+        实测证据(305 笔成交, 对 market.db):
+          · 单笔金额占当日成交额 **中位 0.0010%**(90分位 0.0031%) ⇒ 冲击成本可忽略
+          · 真实滑点 ≈ 1跳(0.01/价格): 中位 **0.047%/边**, 均值 0.069%/边
+          · 旧口径实收 **0.272%/边** ⇒ **高估 5.8 倍**(往返虚增约 0.45%/笔) → 模拟盘低估实盘收益
+
+        mode(execution.slippage_mode): tick(默认) | legacy(旧口径, 与历史 P&L 可比)
+        ⚠️ 买卖**同一函数**校准 —— 若只改一侧会变成"买便宜卖贵"的偏袒偏置。
+        """
+        try:
+            c = self.config or {}
+            mode = str(c.get("slippage_mode")
+                       or (c.get("execution") or {}).get("slippage_mode") or "tick").lower()
+        except Exception:
+            mode = "tick"
+        out = dict(res or {})
+        if mode == "legacy" or price <= 0:
+            out["slip_mode"] = "legacy"
+            return out
+        # ⚠️ 保守化: 单取 1 跳会偏乐观(真实还含逆向选择) → 默认 2 跳(1跳价差 + 1跳逆向选择)
+        #   实测参照: 1跳 中位 0.047%/边; 旧口径 0.272%/边 ⇒ 2跳(≈0.094%)仍比旧口径保守 ~2.9 倍
+        try:
+            _ticks = int(c.get("slippage_ticks")
+                         if c.get("slippage_ticks") is not None
+                         else (c.get("execution") or {}).get("slippage_ticks", 2))
+        except Exception:
+            _ticks = 2
+        _ticks = max(1, _ticks)
+        tick = 0.01 / price * _ticks
+        turn = float((self._stock_micro_cache.get(code) or {}).get("avg_daily_turnover") or 5e8)
+        part_pct = (shares * price) / turn * 100.0        # 参与度 %
+        impact = 0.1 * (part_pct ** 0.5) / 100.0          # 平方根冲击律(1% 参与度 → 0.1%)
+        slip = max(tick, min(0.001, impact))
+        out["slippage"] = slip
+        out["base_slippage"] = tick
+        out["fill_price"] = price * (1 + slip) if is_buy else price * (1 - slip)
+        out["slip_mode"] = "tick"
+        return out
+
     def _get_micro_slippage(self, code: str, shares: int, price: float,
                             is_buy: bool) -> dict:
         """获取微结构增强滑点, 含缓存回退"""
@@ -165,10 +207,10 @@ class SimAccount(BaseExecutor):
                 daily_volume_shares=params["daily_volume_shares"],
                 annual_volatility=params["annual_volatility"],
             )
-            return self._ms_slippage.compute_slippage(
+            return self._apply_slip_mode(self._ms_slippage.compute_slippage(
                 shares=shares, price=price, is_buy=is_buy,
                 mcap_hundred_million=params["mcap_hundred_million"],
-            )
+            ), code, shares, price, is_buy)
         else:
             # 回退到原始逻辑
             mcap = getattr(self, 'stock_mcap', 200)
@@ -192,7 +234,7 @@ class SimAccount(BaseExecutor):
             else:
                 tf = 1.0
             slip = base_slip * tf + random.uniform(0, 0.001)
-            return {
+            return self._apply_slip_mode({
                 "slippage": slip,
                 "base_slippage": base_slip,
                 "time_factor": tf,
@@ -201,7 +243,7 @@ class SimAccount(BaseExecutor):
                 "fill_price": price * (1 + slip) if is_buy else price * (1 - slip),
                 "impact_detail": {},
                 "order_type_advice": {},
-            }
+            }, code, shares, price, is_buy)
 
     def buy(self, code: str, price: float, shares: int, reason: str = "",
             context: dict = None) -> dict:
@@ -231,6 +273,31 @@ class SimAccount(BaseExecutor):
                 return {"success": False, "error": f"涨停价{_lu:.2f}买不进(现价{price:.2f})"}
         except Exception:
             pass
+
+        # ⭐ 2026-10-01 (月度复盘) 单日开仓笔数上限
+        #   实测(FIFO 配对 130 笔, 按当天下单次序分组):
+        #     第1笔 +0.22%/笔(胜率38%, 仓位均值2.5万) | 第2笔 -2.48%/笔 | 第3笔及以后 -2.41%/笔(胜率22~24%)
+        #   ⇒ 当天越晚的信号越差; 默认上限 2 笔(0=不限, 恢复旧行为)
+        try:
+            # ⚠️ 必须用显式 None 判断: `0 or x or y` 会把「0=不限」吞成默认值(实测踩过)
+            _cfg0 = self.config or {}
+            _cap = _cfg0.get("max_opens_per_day")
+            if _cap is None:
+                _cap = (_cfg0.get("execution") or {}).get("max_opens_per_day")
+            if _cap is None:
+                _cap = (_cfg0.get("risk") or {}).get("max_opens_per_day")
+            _cap = 2 if _cap is None else int(_cap)
+        except Exception:
+            _cap = 2
+        if _cap > 0:
+            _today0 = str(datetime.now().date())
+            if getattr(self, "_open_day", "") != _today0:
+                self._open_day = _today0
+                self._open_count = 0
+            if getattr(self, "_open_count", 0) >= _cap:
+                return {"success": False,
+                        "error": f"单日开仓上限{_cap}笔(当日已{self._open_count}笔;"
+                                 f" 实测当天第2笔起期望-2.4%/笔)"}
 
         ms = self._get_micro_slippage(code, shares, price, is_buy=True)
         slippage = ms["slippage"]
@@ -265,6 +332,7 @@ class SimAccount(BaseExecutor):
                 "current_price": fill_price, "entry_date": today,
             }
         self.today_buys[code] = self.today_buys.get(code, 0) + shares
+        self._open_count = getattr(self, "_open_count", 0) + 1   # 2026-10-01 单日开仓计数
 
         trade = {
             "action": "buy", "code": code, "shares": shares,
@@ -273,6 +341,7 @@ class SimAccount(BaseExecutor):
             "base_slip_pct": round(ms.get("base_slippage", 0) * 100, 4),
             "time_factor": ms.get("time_factor", 1.0),
             "ac_impact_pct": round(ms.get("ac_impact", 0) * 100, 4),
+            "slip_mode": ms.get("slip_mode", "?"),        # 2026-10-01: 滑点口径留痕(tick/legacy)
             "fee": round(fee, 2), "total": round(total_cost, 2),
             "cost_detail": {k: round(v, 4) for k, v in cost.items()},
             "order_type": ms.get("order_type_advice", {}).get("order_type", "market"),
@@ -377,6 +446,7 @@ class SimAccount(BaseExecutor):
             "action": "sell", "code": code, "shares": shares,
             "price": round(fill_price, 2),
             "slippage_pct": round(slippage*100, 4),
+            "slip_mode": ms.get("slip_mode", "?"),        # 2026-10-01: 与买入对称留痕
             "base_slip_pct": round(ms.get("base_slippage", 0)*100, 4),
             "time_factor": ms.get("time_factor", 1.0),
             "ac_impact_pct": round(ms.get("ac_impact", 0)*100, 4),
