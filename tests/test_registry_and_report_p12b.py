@@ -28,7 +28,9 @@ def test_zero_trade_seven_resolution():
 def test_deleted_module_is_gone_and_unreferenced():
     proj = Path(__file__).resolve().parent.parent
     assert not (proj / "strategies" / "elliott_wave.py").exists()
-    # 全仓不得再有 import strategies.elliott_wave / from strategies.elliott_wave
+    # 全仓不得再有对已删模块 elliott_wave 的 import 语句
+    # ⚠ 注意: git grep 只搜**已跟踪**文件, 且本注释曾因写出完整 import 语句而自匹配
+    #   (2026-09-28 提交后才暴露: 未跟踪时侥幸通过) → 注释里不得出现可匹配的字面语句
     import subprocess
     r = subprocess.run(["git", "grep", "-n", "-E",
                         r"(import|from)\s+strategies\.elliott_wave", "--", "*.py"],

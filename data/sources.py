@@ -159,8 +159,77 @@ def get_sina_quotes(codes: list) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════
-# 第2层: K线数据 (TDX TCP → 腾讯 → 新浪)
+# 第2层: K线数据 (market.db 共享库 → TDX TCP → 腾讯 → 新浪)
 # ═══════════════════════════════════════════════════════════
+
+# ===== ⭐ 2026-09-25 D:/MarketData/market.db 共享历史库 =====
+#   开关: 环境变量 MARKETDB_READ=1（**默认关 = 完全保持原行为**）
+#   ⚠️ 单位换算: market.db 的 volume 是「股」，而本系统口径是「手」 → **÷100**
+#      （实测: 300319@2026-09-24 本系统 797,555 手 / market.db 79,755,497 股）
+_MARKETDB_PATH = _os.environ.get("MARKETDB", r"D:/MarketData/market.db")
+_MARKETDB_FLAG = r"D:/MarketData/marketdb.flag"
+_MARKETDB_TABLES = {"day": "kline_daily", "daily": "kline_daily",
+                    "5min": "kline_5min", "15min": "kline_15min",
+                    "30min": "kline_30min", "60min": "kline_60min"}
+
+
+def _marketdb_enabled() -> bool:
+    """接入开关（两个系统共读同一个文件，便于一键启停）。
+
+    优先级:
+      1) 环境变量 MARKETDB_READ（'1' 开 / '0' 关，显式设置时以它为准）
+      2) 开关文件 D:/MarketData/marketdb.flag —— **存在即开启**
+    """
+    _v = _os.environ.get("MARKETDB_READ")
+    if _v is not None:
+        return _v == "1"
+    return _os.path.exists(_MARKETDB_FLAG)
+
+
+def _get_kline_from_marketdb(code: str, period: str = "day", days: int = 250) -> pd.DataFrame:
+    """从 D:/MarketData/market.db 读 K 线（各周期统一库，带 ts 索引，毫秒级）。
+
+    返回列与原链路一致: {date, open, close, high, low, volume(手)}
+    开关关闭 / 无该周期 / 无数据时返回空 DataFrame（不影响原降级链）。
+    """
+    if not _marketdb_enabled():
+        return pd.DataFrame()
+    table = _MARKETDB_TABLES.get(period)
+    if not table or not _os.path.exists(_MARKETDB_PATH):
+        return pd.DataFrame()
+    try:
+        import sqlite3 as _sq
+        con = _sq.connect(f"file:{_MARKETDB_PATH}?mode=ro", uri=True, timeout=10)
+        try:
+            raw = con.execute(
+                f"SELECT ts, open, close, high, low, volume FROM {table} "
+                "WHERE code=? ORDER BY ts DESC LIMIT ?", (code, days)).fetchall()
+        finally:
+            con.close()
+        if not raw:
+            return pd.DataFrame()
+        # ★ 新鲜度门控: 该周期最新数据过旧 → 视为不可用（避免返回过期分钟K）
+        #   日K 容 5 个自然日（含周末/假期）；分钟级容 3 天
+        #   根因: market.db 的 1/5/15/60min 覆盖很少（2/119/81/21 只），最新可能停在数日前
+        #   ⚠️ 必须用 raw[0]（DESC 取回的第一根=该票最新），不能在 con.close() 之后再查连接
+        #      （closed database 异常会被下方 except 吞掉 → 门控静默失效）
+        import datetime as _dt
+        try:
+            _mx = (raw[0][0] or "")[:10]
+            _lim = 5 if period in ("day", "daily") else 3
+            if _mx and (_dt.date.today() - _dt.date.fromisoformat(_mx)).days > _lim:
+                return pd.DataFrame()
+        except Exception:
+            pass
+        rows = [{"date": r[0], "open": r[1], "close": r[2], "high": r[3],
+                 "low": r[4], "volume": (r[5] or 0) / 100.0} for r in reversed(raw)]
+        df = pd.DataFrame(rows)
+        df["date"] = pd.to_datetime(df["date"])
+        return df
+    except Exception as e:
+        logger.debug(f"marketdb K线 {code} {period}: {e}")
+        return pd.DataFrame()
+
 
 def _get_kline_from_tencent(code: str, days: int = 250) -> pd.DataFrame:
     """腾讯日K — 主力K线源"""
@@ -221,6 +290,12 @@ def get_kline(code: str, days: int = 500) -> pd.DataFrame:
     except:
         pass
 
+    # ⭐ market.db 共享历史库优先（开关 MARKETDB_READ=1，默认关 → 空 DataFrame 直接跳过）
+    _md_df = _get_kline_from_marketdb(code, "day", days)
+    if _md_df is not None and not _md_df.empty:
+        _set_kline_attrs(_md_df, code)
+        return _md_df
+
     df = _get_kline_from_tdx(code, days)
     if df is not None and not df.empty:
         try:
@@ -240,6 +315,24 @@ def get_kline(code: str, days: int = 500) -> pd.DataFrame:
             pass
         _set_kline_attrs(df, code)
         return df
+
+    # ⭐ SAP 兜底（2026-10-01 接入 stock-analysis-plugin）:
+    #   market.db / TDX / 腾讯 全失败时用插件的 7 源自动切换链。
+    #   实测单只 ~3.9s → 只作最后一道，不进主链（主链仍是 TDX TCP→腾讯）。
+    try:
+        from data.sap_source import get_kline_df as _sap_kline
+        _sap_df = _sap_kline(code, days)
+        if _sap_df is not None and not _sap_df.empty:
+            logger.info(f"K线 {code}: TDX/腾讯失败 → SAP 兜底成功({len(_sap_df)}根)")
+            try:
+                from data.shared_cache import cache as _ck
+                _ck.set(f"kline_{code}_{days}", _sap_df, 60)
+            except Exception:
+                pass
+            _set_kline_attrs(_sap_df, code)
+            return _sap_df
+    except Exception as _e:
+        logger.debug(f"SAP K线兜底不可用 {code}: {_e}")
 
     logger.warning(f"K线 {code}: 所有数据源失败")
     return pd.DataFrame()
@@ -264,6 +357,10 @@ def get_kline_period(code: str, period: str = "day", days: int = 250) -> pd.Data
     pfx = _prefix(code)
     minute_map = {"5min": "m5", "15min": "m15", "30min": "m30", "60min": "m60"}
     if period in minute_map:
+        # ⭐ market.db 共享历史库优先（开关 MARKETDB_READ=1，默认关）
+        _md_df = _get_kline_from_marketdb(code, period, days)
+        if _md_df is not None and not _md_df.empty:
+            return _md_df
         mp = minute_map[period]
         url = f"https://ifzq.gtimg.cn/appstock/app/kline/mkline?param={pfx},{mp},,{days}"
         try:
