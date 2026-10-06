@@ -101,6 +101,20 @@ elif args.phase == "close":
     logging.getLogger("aurora").info("[Close] 日终批量处理开始")
     engine = AuroraEngine('config.yaml')
     engine.step_close()
+    # 2026-09-24 weekly-review P0-2: 6Agent close handling (was missing entirely)
+    #   agent positions' current_price was only set at buy time and mark_day_close
+    #   never ran -> valuation stuck at cost -> per-profile budget gate dead.
+    try:
+        from multi_agent.coordinator import MultiAgentCoordinator
+        _coord = MultiAgentCoordinator()
+        _res = [a.close_day() for a in _coord.agents.values()]
+        try:
+            _coord._save_aggregate()
+        except Exception:
+            pass
+        logging.getLogger("aurora").info("[Close] 6Agent close done: %s" % (_res,))
+    except Exception as _e:
+        logging.getLogger("aurora").warning("[Close] 6Agent close failed: %s" % _e)
     logging.getLogger("aurora").info("[Close] 日终批量处理完成")
 elif args.phase == "review":
     engine.run()

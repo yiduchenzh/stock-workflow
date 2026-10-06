@@ -118,6 +118,60 @@ class TraderAgent:
         self.engine.regime_screening = get_regime_screening_strategy(regime)
         self.engine.monitor_interval = self.engine.agent_trading_style.get("monitor_interval", 30)
 
+    def close_day(self) -> dict:
+        """2026-09-24 weekly-review P0-2: Agent-side close handling (was missing).
+
+        Agent positions' current_price was only set once at buy time (fill_price);
+        multi_agent had NO close entry at all -> valuation == cost forever
+        (float pnl always 0) and mark_day_close() never ran -> close_total == 0
+        -> day_baseline() degraded -> per-profile risk_budget daily ~1e-9
+        -> weekly -5% / monthly -8% budget gate never fires.
+        This fills the gap: refresh close prices -> recompute total -> freeze day close.
+        No trading action (read quotes + persist state only).
+        """
+        acc = self.account
+        updated = 0
+        try:
+            codes = list(acc.positions.keys())
+            if codes:
+                from data.sources import get_tencent_quotes
+                q = get_tencent_quotes(codes) or {}
+                for c, p in acc.positions.items():
+                    px = (q.get(c) or {}).get("price")
+                    if px and float(px) > 0:
+                        p["current_price"] = float(px)
+                        updated += 1
+                acc._update_total()
+        except Exception as e:
+            logger.warning("[Close] %s price refresh failed: %s" % (self.profile_name, e))
+        close_total = 0.0
+        try:
+            close_total = float(acc.mark_day_close())
+            acc._save()
+        except Exception as e:
+            logger.warning("[Close] %s mark_day_close failed: %s" % (self.profile_name, e))
+        logger.info("[Close] %s: refreshed=%d close_total=%.0f total=%.0f"
+                    % (self.profile_name, updated, close_total, float(acc.total_value)))
+        # 2026-09-24 weekly-review P0-2: profile budget entry (same as
+        #   engine.step_close -> budget.record_pnl). RiskBudget resolves its file
+        #   from the AURORA_AGENT env var, so set it before instantiating.
+        try:
+            import os as _os
+            _os.environ["AURORA_AGENT"] = self.profile_name
+            from risk.budget import RiskBudget
+            _b = RiskBudget(getattr(acc, "cfg", None) or {}, float(self.capital))
+            _base = float(acc.day_baseline())
+            _cur = float(acc.total_value)
+            _dpnl = (_cur - _base) / _base if _base > 0 else 0.0
+            _b.record_pnl(_dpnl, _cur)
+            logger.info("[Close] %s budget: daily=%+.4f%% base=%.0f current=%.0f"
+                        % (self.profile_name, _dpnl * 100, _base, _cur))
+        except Exception as e:
+            logger.warning("[Close] %s budget record failed: %s" % (self.profile_name, e))
+        return {"profile": self.profile_name, "prices": updated,
+                "close_total": round(close_total, 2),
+                "total_value": round(float(acc.total_value), 2)}
+
     def _sync_account(self):
         if self.engine and hasattr(self.engine, 'account'):
             self.account = self.engine.account
@@ -160,6 +214,12 @@ class AgentSimAccount:
         self.today_buys = {}
         self.trades = []
         self.total_value = capital
+        # ⭐ v14.51(2026-09-18 周复盘 P1-1): 日基准字段(与 SimAccount 同口径)
+        self.prev_total = float(capital)   # 加载时总资产(兜底)
+        self.day_open_date = ""            # 当日基准日期
+        self.day_open_total = 0.0          # 当日基准总资产(当日首次固化)
+        self.close_date = ""               # 最近日终记录日期
+        self.close_total = 0.0             # 该日总资产(次日作基准)
         self._load()
 
     def _load(self):
@@ -172,6 +232,11 @@ class AgentSimAccount:
                 self.today_buys = dict(d.get("today_buys", {}))
                 # v14.41d: 记录加载时的总资产(昨收/上次保存), 供engine计算"今日盈亏"基准
                 self.prev_total = float(d.get("total", self.total_value))
+                # ⭐ v14.51(2026-09-18 P1-1): 日基准字段落盘/读回
+                self.day_open_date = str(d.get("day_open_date", "") or "")
+                self.day_open_total = float(d.get("day_open_total", 0) or 0)
+                self.close_date = str(d.get("close_date", "") or "")
+                self.close_total = float(d.get("close_total", 0) or 0)
                 saved_date = d.get("date", "")
                 if saved_date and saved_date != str(datetime.now().date()):
                     self.today_buys = {}
@@ -193,8 +258,43 @@ class AgentSimAccount:
             "today_buys": dict(self.today_buys),
             "total": round(self.total_value, 2),
             "date": str(datetime.now().date()),
+            # ⭐ v14.51(2026-09-18 P1-1): 日基准随状态落盘
+            "day_open_date": self.day_open_date,
+            "day_open_total": round(self.day_open_total, 2),
+            "close_date": self.close_date,
+            "close_total": round(self.close_total, 2),
         }, indent=2, ensure_ascii=False), encoding="utf-8")
         self.trades_path.write_text(json.dumps(self.trades[-500:], indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def day_baseline(self) -> float:
+        """当日盈亏基准(总资产) — 每日首次调用固化并落盘, 同日复用。
+
+        ⭐ v14.51(2026-09-18 周复盘 P1-1): AgentSimAccount 原缺此方法 → engine 回退
+        prev_total(同日被 _save 刷新) → daily_pnl≡0 → 画像 risk_budget weekly_pnl
+        恒 1e-9 → 周-5%/月-8% 闸永不触发。与 SimAccount.day_baseline 同口径。
+        优先级: ① 昨日日终(close_total) ② 当日已固化 ③ 加载时总资产 ④ 本金。
+        """
+        today = str(datetime.now().date())
+        if self.day_open_date == today and self.day_open_total > 0:
+            return self.day_open_total
+        base = 0.0
+        if self.close_date and self.close_date != today and self.close_total > 0:
+            base = self.close_total
+        elif getattr(self, "prev_total", 0) and float(self.prev_total) > 0:
+            base = float(self.prev_total)
+        if base <= 0:
+            base = float(self.capital)
+        self.day_open_date = today
+        self.day_open_total = float(base)
+        self._save()
+        return float(base)
+
+    def mark_day_close(self) -> float:
+        """日终记录总资产(供次日作当日基准)。⭐ v14.51(2026-09-18 P1-1)"""
+        self.close_date = str(datetime.now().date())
+        self.close_total = float(self.total_value)
+        self._save()
+        return self.close_total
 
     def _update_total(self):
         pv = sum(p.get("shares",0)*p.get("current_price",p.get("avg_cost",0))

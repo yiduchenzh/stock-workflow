@@ -1,0 +1,422 @@
+[
+    {
+        "task_name":  "AuroraClose",
+        "user_id":  "SYSTEM",
+        "run_level":  "Limited",
+        "logon":  "ServiceAccount",
+        "actions":  [
+                        {
+                            "execute":  "\"D:\\Hermes Agent CN Desktop\\stock-workflow\\.venv\\Scripts\\python.exe\"",
+                            "arguments":  "D:\\Hermes Agent CN Desktop\\stock-workflow\\daily_run.py --phase close",
+                            "working_dir":  "D:\\Hermes Agent CN Desktop\\stock-workflow"
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskDailyTrigger",
+                             "start":  "2026-09-24T15:02:00+08:00",
+                             "days_interval":  "1",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "AuroraDaemon",
+        "user_id":  "User871619",
+        "run_level":  "Limited",
+        "logon":  "Interactive",
+        "actions":  [
+                        {
+                            "execute":  "\"D:\\Hermes Agent CN Desktop\\stock-workflow\\start_daemon.bat\"",
+                            "arguments":  null,
+                            "working_dir":  "D:\\Hermes Agent CN Desktop\\stock-workflow"
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskLogonTrigger",
+                             "start":  "",
+                             "days_interval":  "",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "AuroraMorningRun",
+        "user_id":  "SYSTEM",
+        "run_level":  "Limited",
+        "logon":  "ServiceAccount",
+        "actions":  [
+                        {
+                            "execute":  "\"D:\\Hermes Agent CN Desktop\\stock-workflow\\start_multi_test.bat\"",
+                            "arguments":  null,
+                            "working_dir":  "D:\\Hermes Agent CN Desktop\\stock-workflow"
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskDailyTrigger",
+                             "start":  "2026-07-03T09:25:00+08:00",
+                             "days_interval":  "1",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_6Agent_Monitor",
+        "user_id":  "SYSTEM",
+        "run_level":  "Limited",
+        "logon":  "ServiceAccount",
+        "actions":  [
+                        {
+                            "execute":  "\"D:\\Hermes Agent CN Desktop\\stock-workflow\\.venv\\Scripts\\python.exe\"",
+                            "arguments":  "D:\\Hermes Agent CN Desktop\\stock-workflow\\daily_run.py --phase multi_monitor",
+                            "working_dir":  "D:\\Hermes Agent CN Desktop\\stock-workflow"
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskDailyTrigger",
+                             "start":  "2026-07-03T10:05:00+08:00",
+                             "days_interval":  "1",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_6Agent_Morning",
+        "user_id":  "SYSTEM",
+        "run_level":  "Limited",
+        "logon":  "ServiceAccount",
+        "actions":  [
+                        {
+                            "execute":  "\"D:\\Hermes Agent CN Desktop\\stock-workflow\\.venv\\Scripts\\python.exe\"",
+                            "arguments":  "D:\\Hermes Agent CN Desktop\\stock-workflow\\daily_run.py --phase multi_morning",
+                            "working_dir":  "D:\\Hermes Agent CN Desktop\\stock-workflow"
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskDailyTrigger",
+                             "start":  "2026-07-03T09:28:00+08:00",
+                             "days_interval":  "1",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_6Agent_Noon",
+        "user_id":  "SYSTEM",
+        "run_level":  "Limited",
+        "logon":  "ServiceAccount",
+        "actions":  [
+                        {
+                            "execute":  "\"D:\\Hermes Agent CN Desktop\\stock-workflow\\.venv\\Scripts\\python.exe\"",
+                            "arguments":  "D:\\Hermes Agent CN Desktop\\stock-workflow\\daily_run.py --phase multi_monitor",
+                            "working_dir":  "D:\\Hermes Agent CN Desktop\\stock-workflow"
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskDailyTrigger",
+                             "start":  "2026-07-03T13:05:00+08:00",
+                             "days_interval":  "1",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_AuctionL2Probe",
+        "user_id":  "SYSTEM",
+        "run_level":  "Limited",
+        "logon":  "ServiceAccount",
+        "actions":  [
+                        {
+                            "execute":  "\"D:\\Hermes Agent CN Desktop\\stock-workflow\\deploy\\auction_l2_probe.bat\"",
+                            "arguments":  null,
+                            "working_dir":  "D:\\Hermes Agent CN Desktop\\stock-workflow"
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskTimeTrigger",
+                             "start":  "2026-09-28T09:16:00+08:00",
+                             "days_interval":  "",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_Auction_0920",
+        "user_id":  "SYSTEM",
+        "run_level":  "Limited",
+        "logon":  "ServiceAccount",
+        "actions":  [
+                        {
+                            "execute":  "\"D:\\Hermes Agent CN Desktop\\stock-workflow\\run_auction.bat\"",
+                            "arguments":  null,
+                            "working_dir":  "D:\\Hermes Agent CN Desktop\\stock-workflow"
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskDailyTrigger",
+                             "start":  "2026-07-03T09:20:00+08:00",
+                             "days_interval":  "1",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_FullScan_1100",
+        "user_id":  "SYSTEM",
+        "run_level":  "Limited",
+        "logon":  "ServiceAccount",
+        "actions":  [
+                        {
+                            "execute":  "\"D:\\Hermes Agent CN Desktop\\stock-workflow\\run_monitor.bat\"",
+                            "arguments":  null,
+                            "working_dir":  "D:\\Hermes Agent CN Desktop\\stock-workflow"
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskDailyTrigger",
+                             "start":  "2026-07-03T11:00:00+08:00",
+                             "days_interval":  "1",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_FullScan_1430",
+        "user_id":  "SYSTEM",
+        "run_level":  "Limited",
+        "logon":  "ServiceAccount",
+        "actions":  [
+                        {
+                            "execute":  "\"D:\\Hermes Agent CN Desktop\\stock-workflow\\run_monitor.bat\"",
+                            "arguments":  null,
+                            "working_dir":  "D:\\Hermes Agent CN Desktop\\stock-workflow"
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskDailyTrigger",
+                             "start":  "2026-07-03T14:30:00+08:00",
+                             "days_interval":  "1",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_Monitor_5min",
+        "user_id":  "SYSTEM",
+        "run_level":  "Limited",
+        "logon":  "ServiceAccount",
+        "actions":  [
+                        {
+                            "execute":  "\"D:\\Hermes Agent CN Desktop\\stock-workflow\\run_fast_monitor.bat\"",
+                            "arguments":  null,
+                            "working_dir":  "D:\\Hermes Agent CN Desktop\\stock-workflow"
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskTimeTrigger",
+                             "start":  "2026-07-03T11:19:00+08:00",
+                             "days_interval":  "",
+                             "rep":  "PT5M"
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_Morning",
+        "user_id":  "SYSTEM",
+        "run_level":  "Limited",
+        "logon":  "ServiceAccount",
+        "actions":  [
+                        {
+                            "execute":  "\"D:\\Hermes Agent CN Desktop\\stock-workflow\\run_morning.bat\"",
+                            "arguments":  null,
+                            "working_dir":  "D:\\Hermes Agent CN Desktop\\stock-workflow"
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskDailyTrigger",
+                             "start":  "2026-06-25T09:35:00+08:00",
+                             "days_interval":  "1",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_Review",
+        "user_id":  "SYSTEM",
+        "run_level":  "Limited",
+        "logon":  "ServiceAccount",
+        "actions":  [
+                        {
+                            "execute":  "\"D:\\Hermes Agent CN Desktop\\stock-workflow\\run_review.bat\"",
+                            "arguments":  null,
+                            "working_dir":  "D:\\Hermes Agent CN Desktop\\stock-workflow"
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskDailyTrigger",
+                             "start":  "2026-07-03T15:05:00+08:00",
+                             "days_interval":  "1",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "HunterChanlunNightly_1615",
+        "user_id":  "User871619",
+        "run_level":  "Limited",
+        "logon":  "Interactive",
+        "actions":  [
+                        {
+                            "execute":  "cmd.exe",
+                            "arguments":  "/c \"D:\\Hermes Agent CN Desktop\\hunter-v2\\run_chanlun_nightly.bat\"",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskWeeklyTrigger",
+                             "start":  "2026-09-11T16:15:00+08:00",
+                             "days_interval":  "",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "HunterFactorPanel_1550",
+        "user_id":  "User871619",
+        "run_level":  "Limited",
+        "logon":  "Interactive",
+        "actions":  [
+                        {
+                            "execute":  "cmd",
+                            "arguments":  "/c \"D:\\Hermes Agent CN Desktop\\hunter-v2\\run_factor_panel_daily.bat\"",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskWeeklyTrigger",
+                             "start":  "2026-09-12T15:50:00+08:00",
+                             "days_interval":  "",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "HunterKline_Daily_1545",
+        "user_id":  "User871619",
+        "run_level":  "Limited",
+        "logon":  "Interactive",
+        "actions":  [
+                        {
+                            "execute":  "cmd.exe",
+                            "arguments":  "/c \"D:\\Hermes Agent CN Desktop\\limitup-system\\build_kline_db.bat\"",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskDailyTrigger",
+                             "start":  "2026-08-09T15:45:00+08:00",
+                             "days_interval":  "1",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "HunterScreenerPerf_Daily_1600",
+        "user_id":  "User871619",
+        "run_level":  "Limited",
+        "logon":  "Interactive",
+        "actions":  [
+                        {
+                            "execute":  "cmd.exe",
+                            "arguments":  "/c \"D:\\Hermes Agent CN Desktop\\hunter-v2\\run_screener_perf.bat\"",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskDailyTrigger",
+                             "start":  "2026-08-10T16:00:00+08:00",
+                             "days_interval":  "1",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "HunterScreener_Daily_1545",
+        "user_id":  "User871619",
+        "run_level":  "Limited",
+        "logon":  "Interactive",
+        "actions":  [
+                        {
+                            "execute":  "cmd.exe",
+                            "arguments":  "/c \"D:\\Hermes Agent CN Desktop\\hunter-v2\\run_screener_daily.bat\"",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskDailyTrigger",
+                             "start":  "2026-08-10T15:45:00+08:00",
+                             "days_interval":  "1",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "HunterV2_Autostart",
+        "user_id":  "User871619",
+        "run_level":  "Limited",
+        "logon":  "Interactive",
+        "actions":  [
+                        {
+                            "execute":  "\"D:\\Hermes Agent CN Desktop\\hunter-v2\\start_unattended.bat\"",
+                            "arguments":  null,
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskLogonTrigger",
+                             "start":  "",
+                             "days_interval":  "",
+                             "rep":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "HunterV2_Daily_0830",
+        "user_id":  "User871619",
+        "run_level":  "Limited",
+        "logon":  "Interactive",
+        "actions":  [
+                        {
+                            "execute":  "cmd.exe",
+                            "arguments":  "/c \"D:\\Hermes Agent CN Desktop\\hunter-v2\\start_unattended.bat\"",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "MSFT_TaskDailyTrigger",
+                             "start":  "2026-08-09T08:30:00+08:00",
+                             "days_interval":  "1",
+                             "rep":  ""
+                         }
+                     ]
+    }
+]

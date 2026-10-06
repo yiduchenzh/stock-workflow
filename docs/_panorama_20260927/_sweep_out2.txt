@@ -1,0 +1,22 @@
+GET 路由总数 = 144
+  ❌ /api/v1/trade/decisions                              ERR:TimeoutError
+  ❌ /api/v1/dip-rolling/signals                          ERR:TimeoutError
+  ❌ /api/v1/limitup/strong-pool                          ERR:TimeoutError
+  ❌ /api/v1/limitup/absorb-quality/{code}                ERR:TimeoutError
+  ❌ /api/v1/market/sector-trend                          ERR:TimeoutError
+  ❌ /api/v1/prevclose15/status                           ERR:TimeoutError
+
+结果：200=135  非200=6  跳过(重活/参数未知)=3
+
+非 200 清单：
+  /api/v1/trade/decisions                                  ERR:TimeoutError
+  /api/v1/dip-rolling/signals                              ERR:TimeoutError
+  /api/v1/limitup/strong-pool                              ERR:TimeoutError
+  /api/v1/limitup/absorb-quality/{code}                    ERR:TimeoutError
+  /api/v1/market/sector-trend                              ERR:TimeoutError
+  /api/v1/prevclose15/status                               ERR:TimeoutError
+
+跳过清单（前 25）：
+   /api/v1/dip-rolling/backtest/status
+   /api/v1/vol-signal/scan
+   /api/v1/wave/scan

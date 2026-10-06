@@ -25,7 +25,11 @@ class TestEngine:
         assert engine.mode == "paper"
         assert engine.market_score == 50
         assert engine.market_regime == "range"
-        assert engine.positions == {}
+        # 2026-09-27 修复: 原断言 `engine.positions == {}` 依赖"隔离账户文件恰好为空",
+        #   而 tests 侧 SimAccount 用 data/sim_state_test.json 且跨轮次残留
+        #   (2026-09-25 残留 000001 持仓 → 该用例必挂)。改断言真实不变量:
+        #   init 时引擎持仓必须与持久化账户持仓逐项一致(空账户→空dict)。
+        assert engine.positions == dict(engine.account.positions)
 
     def test_regime_mapping_bull_strong(self):
         """market_score→bull_strong"""

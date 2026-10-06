@@ -1,0 +1,10 @@
+{
+  "name": "webread",
+  "private": true,
+  "version": "1.0.0",
+  "type": "commonjs",
+  "description": "自动读取网页数据（puppeteer-core + 系统 Edge，零浏览器下载）",
+  "dependencies": {
+    "puppeteer-core": "^24.10.0"
+  }
+}

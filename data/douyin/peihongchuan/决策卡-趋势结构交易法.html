@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: inherit; color: var(--foreground); }
+  .wrap { display: flex; gap: 26px; align-items: flex-start; }
+  .col { display: flex; flex-direction: column; gap: 0; }
+
+  .title { font-size: 15px; font-weight: 700; letter-spacing: .3px; margin: 0 0 10px; }
+  .sub { font-size: 11px; color: var(--muted-foreground); margin: -6px 0 12px; }
+
+  .step {
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 7px;
+    padding: 8px 11px;
+    background: var(--card);
+    min-width: 320px; max-width: 380px;
+  }
+  .step .q { font-size: 12.5px; font-weight: 650; line-height: 1.35; }
+  .step .ok { font-size: 11px; color: var(--muted-foreground); margin-top: 3px; line-height: 1.45; }
+  .step .ok b { color: var(--foreground); font-weight: 600; }
+  .step.stop { border-left-color: #c0392b; }
+  .step.wait { border-left-color: #b7791f; }
+
+  .arrow { text-align: left; padding-left: 16px; font-size: 13px; line-height: 1; color: var(--muted-foreground); height: 20px; display: flex; align-items: center; }
+  .back { font-size: 10.5px; color: var(--muted-foreground); padding: 2px 0 0 6px; }
+  .back b { color: #c0392b; font-weight: 600; }
+
+  .side { min-width: 250px; max-width: 300px; }
+  .card { border: 1px solid var(--border); border-radius: 7px; padding: 9px 11px; background: var(--card); margin-bottom: 9px; }
+  .card h4 { margin: 0 0 5px; font-size: 12px; font-weight: 700; }
+  .card ul { margin: 0; padding-left: 15px; font-size: 11px; line-height: 1.6; color: var(--muted-foreground); }
+  .card ul b { color: var(--foreground); font-weight: 600; }
+  .tag { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted-foreground); margin-left: 5px; vertical-align: 1px;}
+  .final { border: 1px solid var(--accent); border-radius: 7px; padding: 8px 11px; font-size: 11.5px; line-height: 1.5; }
+  .final b { font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ============ 决策主线 ============ -->
+  <div class="col">
+    <div class="title">裴洪川《趋势结构交易法》· 一次交易决策 SOP</div>
+    <div class="sub">七道闸门，全过才动手；任何一道不过 → 回到「等」</div>
+
+    <div class="step">
+      <div class="q">① 定级别</div>
+      <div class="ok">周线 / 日线 / 60分钟 三个级别都看清。<b>只看单级别 = 没看清</b>。</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="step stop">
+      <div class="q">② 定趋势 <span class="tag">模块1</span></div>
+      <div class="ok">有明确高低点序列？处在 <b>形成 / 延续 / 结束</b> 哪一期？<br>
+      <b>大级别下跌 + 小级别上涨 = 只是反弹</b> → 停。</div>
+    </div>
+    <div class="back">不过 → 空仓等</div>
+    <div class="arrow">↓</div>
+
+    <div class="step stop">
+      <div class="q">③ 验结构 <span class="tag">模块2 · 灵魂</span></div>
+      <div class="ok">高低点像<b>楼梯</b>（HH+HL）？回调破 <b>0.618 / 前低</b> 了吗？<br>
+      无序 = 震荡 = <b>坚决不操作</b>。</div>
+    </div>
+    <div class="back">不过 → <b>坚决不操作</b>，回①</div>
+    <div class="arrow">↓</div>
+
+    <div class="step wait">
+      <div class="q">④ 等位置 <span class="tag">模块3</span></div>
+      <div class="ok">是<b>苹果</b>吗（回调<b>到位</b>，不是半山腰）？还是<b>震荡突破</b>（收盘破前高）？<br>
+      回调是<b>轻度回调</b>还是<b>上涨到阻力区后的下跌</b>（=反转）？<br>
+      <b>90% 的时间花在这一步：等。</b></div>
+    </div>
+    <div class="back">没到位 / 是反转 → 继续等</div>
+    <div class="arrow">↓</div>
+
+    <div class="step stop">
+      <div class="q">⑤ 等信号 <span class="tag">模块4</span></div>
+      <div class="ok">方向：<b>50线上方且破前高</b> / <b>60线向上且价在线上</b> / <b>年线上方</b>？<br>
+      节奏：<b>周线MACD 零轴上金叉</b>？关键位出现<b>看涨吞没</b>？<br>
+      <b>方向错 → 金叉也是假信号。</b></div>
+    </div>
+    <div class="back">方向不对 → 不做</div>
+    <div class="arrow">↓</div>
+
+    <div class="step stop">
+      <div class="q">⑥ 下单 <span class="tag">模块5</span></div>
+      <div class="ok">在图上标出 <b>C 点（交易失效位）</b> → 止损设在C下方。<br>
+      <b>盈亏比 ≥ 3:1 ？</b> 不够 → 不做。画不出止损 → 不做。<br>
+      仓位：总资金 <b>10–20%</b> 起步。</div>
+    </div>
+    <div class="back">画不出止损 / 赔率不够 → 不做</div>
+    <div class="arrow">↓</div>
+
+    <div class="step">
+      <div class="q">⑦ 持仓：只盯两件事</div>
+      <div class="ok">日线<b>失效位</b>破没破？· 60分钟<b>结构低点</b>破没破？<br>
+      都没破 → 拿着（"上涨趋势还在，你怕啥"）。<br>
+      破了 → <b>走</b>：不等反弹，不等回本。</div>
+    </div>
+  </div>
+
+  <!-- ============ 侧栏速查 ============ -->
+  <div class="side">
+    <div class="card">
+      <h4>内核一句话</h4>
+      <ul>
+        <li><b>趋势给方向，结构给操作</b></li>
+        <li>市场只有 <b>上涨 / 下跌 / 震荡</b>，交易做的是「转化」那一刻</li>
+        <li>「就算选对品种，<b>找不对时机照样白搭</b>」</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h4>他明确说不看的</h4>
+      <ul>
+        <li>成交量 · 筹码 · 指标 · 资金</li>
+        <li>「所有信息都会<b>体现在趋势上</b>」</li>
+        <li>⚠️ 但均线/MACD 他又拿来当 <b>确认/节奏</b> 工具 —— 只做最后一票否决，<b>不用来找票</b></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h4>按「不该做」记更快</h4>
+      <ul>
+        <li>下跌趋势里<b>半空接刀子</b></li>
+        <li>回调<b>没到位</b>就冲</li>
+        <li>均线向下时的 <b>MACD 金叉</b></li>
+        <li>见<b>一根阳线</b>就抄底</li>
+        <li>买<b>低价股</b></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h4>实证提醒（全市场实测）</h4>
+      <ul>
+        <li>「年线上方 / MA60多头 / 均线+MACD共振 / 上半月」→ <b>20日均值收益无 alpha，部分为负</b></li>
+        <li>但追高型 <b>5%分位亏损 −20.7%~−21.6%</b>，下跌中买入仅 <b>−16.2%</b></li>
+        <li>→ <b>风险控制成立，alpha 不成立</b></li>
+      </ul>
+    </div>
+
+    <div class="final">
+      <b>拿走这两样就值了：</b><br>
+      ① 止损 = <b>交易失效位</b>（不是固定百分比）<br>
+      ② <b>3:1</b> 固定盈亏比<br>
+      <span style="color:var(--muted-foreground)">其余当参考；纪律拿走，全都不成立。</span>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -65,7 +65,7 @@ class MarketMemory:
                 save_obj["daily_snapshots"] = old_data["daily_snapshots"]
 
             MEMORY_FILE.write_text(
-                json.dumps(save_obj, indent=2, ensure_ascii=False)
+                json.dumps(save_obj, indent=2, ensure_ascii=False), encoding="utf-8"
             )
         except Exception as e:
             logger.warning(f"[Soul] market_memory保存失败: {e}")
@@ -179,7 +179,7 @@ class MarketMemory:
             # 保存(不破坏原有records)
             MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
             MEMORY_FILE.write_text(
-                json.dumps(records, indent=2, ensure_ascii=False)
+                json.dumps(records, indent=2, ensure_ascii=False), encoding="utf-8"
             )
             logger.info(f"[Soul] daily_snapshot: {today} score={market_score:.0f} "
                          f"regime={regime} sentiment={sentiment}")

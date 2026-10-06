@@ -35,7 +35,7 @@ TRADER_PROFILES = {
     "趋势跟踪者": {
         "code": "trend_follower", "holding_period": "10-30天", "risk_tolerance": "稳健(<10%)", "screen_time": "半职(2-4h)", "analysis_style": "技术面+宏观", "trader_level": "中级",
         "primary_kline": "daily", "secondary_kline": "weekly", "min_kline_days": 250,
-        "strategy_weights": {"momentum_breakout": 2.0, "wave_point": 1.0, "sector_rotation": 0.5, "mean_reversion": 0.0},
+        "strategy_weights": {"chan_buy1": 2.0, "ma_breakout": 2.0, "wave_point": 2.0, "prev_close_A": 2.0, "momentum_breakout": 0.0, "sector_rotation": 0.5, "mean_reversion": 0.0},
         "risk": {"stop_loss_pct": 0.07, "take_profit_pct": 0.18, "max_position_pct": 0.20, "max_positions": 4, "daily_loss_limit_pct": -3.0, "kelly_fraction": 0.6, "trailing_stop_activation": 0.08, "trailing_stop_distance": 0.05},
         "market": {"min_score_to_trade": 45, "min_score_to_full": 70, "bear_regime_stop": True},
         "coach_style": "沉稳大局", "push_frequency": "每日晨报", "training_focus": ["仓位管理", "趋势识别"],
@@ -63,7 +63,7 @@ TRADER_PROFILES = {
                              # ⭐ v14.50(P1-A, 2026-09-04 周复盘): 激活价值画像 — 原无prev_close权重,
                              #   8/13止损后死仓24天。给低吸(A型挖坑)2.0权重与价值低吸风格一致。
                              # ⭐ v14.49(P1-1, 2026-09-11): A型实盘几乎不产信号 → 补 prev_close_B:2.0(单信号可确认)。
-                             "prev_close_A": 2.0, "prev_close_B": 2.0},
+                             "prev_close_A": 3.0, "prev_close_B": 2.0},
         "risk": {"stop_loss_pct": 0.10, "take_profit_pct": 0.25, "max_position_pct": 0.25, "max_positions": 3, "daily_loss_limit_pct": -5.0, "kelly_fraction": 0.4, "trailing_stop_activation": 0.10, "trailing_stop_distance": 0.06},
         "market": {"min_score_to_trade": 30, "min_score_to_full": 55, "bear_regime_stop": False},
         "coach_style": "理性数据", "push_frequency": "每周简报", "training_focus": ["基本面分析", "耐心持有"],
@@ -84,7 +84,7 @@ SCREENING_CONFIGS = {
         "min_pe": -100,
         "max_pe": 500,
         "min_vol_ratio": 0.5,
-        "signal_prefer": {"momentum_breakout": 2.0, "wave_point": 1.5, "sector_rotation": 0.5, "chan_buy3": 0.5, "123_rule": 0.5, "first_board": 0.0,
+        "signal_prefer": {"wave_point": 2.0, "momentum_breakout": 2.0, "sector_rotation": 0.5, "chan_buy3": 0.5, "123_rule": 0.5, "first_board": 0.0,
                           # ⭐ 2026-08-16 P0-② 单引擎可达性: signal_prefer 同步补 prev_close(与 strategy_weights 一致,
                           #   二者都被 _apply_profile 注入 cfg[risk][strategy_weights], 后者覆盖前者, 缺一不可)。
                           "prev_close_A": 2.0, "prev_close_B": 1.5},
@@ -111,7 +111,7 @@ SCREENING_CONFIGS = {
         "min_pe": 0,
         "max_pe": 200,
         "min_vol_ratio": 0.3,
-        "signal_prefer": {"momentum_breakout": 2.0, "ma_breakout": 1.5, "wave_point": 1.5, "chan_buy1": 1.0, "chan_buy3": 1.0},
+        "signal_prefer": {"chan_buy1": 2.0, "ma_breakout": 2.0, "wave_point": 2.0, "prev_close_A": 2.0, "chan_buy3": 1.0, "momentum_breakout": 0.0},
     },
     "新手入门": {
         "pool": "大市值+低波动",
@@ -139,7 +139,7 @@ SCREENING_CONFIGS = {
         "min_vol_ratio": 0.1,
         "signal_prefer": {"momentum_breakout": 1.5, "mean_reversion": 0.5, "ma_breakout": 0.5, "wave_point": 0.5, "sector_rotation": 0.0,
                           # v14.50(P1-A): 同步strategy_weights的prev_close(激活死仓)
-                          "prev_close_A": 2.0, "prev_close_B": 2.0},
+                          "prev_close_A": 3.0, "prev_close_B": 2.0},
     },
 }
 

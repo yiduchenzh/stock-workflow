@@ -67,3 +67,20 @@ review_output.txt
 None/
 data/*.db
 data/*.csv
+
+# ⭐ 大型二进制/媒体产物（不入库, 2026-10-06 同步前清理）
+*.pkl
+*.npy
+*.mp4
+*.m4a
+*.wav
+data/*.db-shm
+data/*.db-wal
+data/*.jsonl
+tools/webread/node_modules/
+
+# ⭐ 备份/一次性产物
+_restore/
+*.bak0918
+*.bak0924*
+*.out

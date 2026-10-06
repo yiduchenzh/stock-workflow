@@ -1,0 +1,462 @@
+[
+    {
+        "task_name":  "AuroraClose",
+        "task_path":  "\\",
+        "user_id":  "SYSTEM",
+        "logon_type":  "ServiceAccount",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "d:\\Aurora\\.venv\\Scripts\\python.exe",
+                            "arguments":  "d:\\Aurora\\daily_run.py --phase close",
+                            "working_dir":  "d:\\Aurora"
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Daily",
+                             "start":  "2026-09-24T15:02:00",
+                             "days_interval":  "1",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "AuroraDaemon",
+        "task_path":  "\\",
+        "user_id":  "User871619",
+        "logon_type":  "Interactive",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "d:\\Aurora\\start_daemon.bat",
+                            "arguments":  null,
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Logon",
+                             "start":  "2026-07-03T15:41:00",
+                             "days_interval":  "",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "AuroraMorningRun",
+        "task_path":  "\\",
+        "user_id":  "SYSTEM",
+        "logon_type":  "ServiceAccount",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "d:\\Aurora\\start_multi_test.bat",
+                            "arguments":  null,
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Daily",
+                             "start":  "2026-07-03T09:25:00",
+                             "days_interval":  "1",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_6Agent_Monitor",
+        "task_path":  "\\",
+        "user_id":  "SYSTEM",
+        "logon_type":  "ServiceAccount",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "d:\\Aurora\\.venv\\Scripts\\python.exe",
+                            "arguments":  "d:\\Aurora\\daily_run.py --phase multi_monitor",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Daily",
+                             "start":  "2026-07-03T10:05:00",
+                             "days_interval":  "1",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_6Agent_Morning",
+        "task_path":  "\\",
+        "user_id":  "SYSTEM",
+        "logon_type":  "ServiceAccount",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "d:\\Aurora\\.venv\\Scripts\\python.exe",
+                            "arguments":  "d:\\Aurora\\daily_run.py --phase multi_morning",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Daily",
+                             "start":  "2026-07-03T09:28:00",
+                             "days_interval":  "1",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_6Agent_Noon",
+        "task_path":  "\\",
+        "user_id":  "SYSTEM",
+        "logon_type":  "ServiceAccount",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "d:\\Aurora\\.venv\\Scripts\\python.exe",
+                            "arguments":  "d:\\Aurora\\daily_run.py --phase multi_monitor",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Daily",
+                             "start":  "2026-07-03T13:05:00",
+                             "days_interval":  "1",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_AuctionL2Probe",
+        "task_path":  "\\",
+        "user_id":  "SYSTEM",
+        "logon_type":  "ServiceAccount",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "\"D:\\Hermes Agent CN Desktop\\stock-workflow\\deploy\\auction_l2_probe.bat\"",
+                            "arguments":  null,
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Time",
+                             "start":  "2026-09-28T09:16:00",
+                             "days_interval":  "",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_Auction_0920",
+        "task_path":  "\\",
+        "user_id":  "SYSTEM",
+        "logon_type":  "ServiceAccount",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "d:\\Aurora\\run_auction.bat",
+                            "arguments":  null,
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Daily",
+                             "start":  "2026-07-03T09:20:00",
+                             "days_interval":  "1",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_FullScan_1100",
+        "task_path":  "\\",
+        "user_id":  "SYSTEM",
+        "logon_type":  "ServiceAccount",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "d:\\Aurora\\run_monitor.bat",
+                            "arguments":  null,
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Daily",
+                             "start":  "2026-07-03T11:00:00",
+                             "days_interval":  "1",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_FullScan_1430",
+        "task_path":  "\\",
+        "user_id":  "SYSTEM",
+        "logon_type":  "ServiceAccount",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "d:\\Aurora\\run_monitor.bat",
+                            "arguments":  null,
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Daily",
+                             "start":  "2026-07-03T14:30:00",
+                             "days_interval":  "1",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_Monitor_5min",
+        "task_path":  "\\",
+        "user_id":  "SYSTEM",
+        "logon_type":  "ServiceAccount",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "d:\\Aurora\\run_fast_monitor.bat",
+                            "arguments":  null,
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Time",
+                             "start":  "2026-07-03T11:19:00",
+                             "days_interval":  "",
+                             "days_of_week":  null,
+                             "rep_interval":  "PT5M"
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_Morning",
+        "task_path":  "\\",
+        "user_id":  "SYSTEM",
+        "logon_type":  "ServiceAccount",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "d:\\Aurora\\run_morning.bat",
+                            "arguments":  null,
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Daily",
+                             "start":  "2026-06-25T09:35:00",
+                             "days_interval":  "1",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "Aurora_Review",
+        "task_path":  "\\",
+        "user_id":  "SYSTEM",
+        "logon_type":  "ServiceAccount",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "d:\\Aurora\\run_review.bat",
+                            "arguments":  null,
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Daily",
+                             "start":  "2026-07-03T15:05:00",
+                             "days_interval":  "1",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "HunterChanlunNightly_1615",
+        "task_path":  "\\",
+        "user_id":  "User871619",
+        "logon_type":  "Interactive",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "cmd.exe",
+                            "arguments":  "/c \"D:\\Hermes Agent CN Desktop\\hunter-v2\\run_chanlun_nightly.bat\"",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Weekly",
+                             "start":  "2026-09-11T16:15:00+08:00",
+                             "days_interval":  "",
+                             "days_of_week":  "62",
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "HunterFactorPanel_1550",
+        "task_path":  "\\",
+        "user_id":  "User871619",
+        "logon_type":  "Interactive",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "cmd",
+                            "arguments":  "/c \"D:\\Hermes Agent CN Desktop\\hunter-v2\\run_factor_panel_daily.bat\"",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Weekly",
+                             "start":  "2026-09-12T15:50:00",
+                             "days_interval":  "",
+                             "days_of_week":  "62",
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "HunterKline_Daily_1545",
+        "task_path":  "\\",
+        "user_id":  "User871619",
+        "logon_type":  "Interactive",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "cmd.exe",
+                            "arguments":  "/c \"D:\\Hermes Agent CN Desktop\\limitup-system\\build_kline_db.bat\"",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Daily",
+                             "start":  "2026-08-09T15:45:00",
+                             "days_interval":  "1",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "HunterScreenerPerf_Daily_1600",
+        "task_path":  "\\",
+        "user_id":  "User871619",
+        "logon_type":  "Interactive",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "cmd.exe",
+                            "arguments":  "/c \"D:\\Hermes Agent CN Desktop\\hunter-v2\\run_screener_perf.bat\"",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Daily",
+                             "start":  "2026-08-10T16:00:00",
+                             "days_interval":  "1",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "HunterScreener_Daily_1545",
+        "task_path":  "\\",
+        "user_id":  "User871619",
+        "logon_type":  "Interactive",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "cmd.exe",
+                            "arguments":  "/c \"D:\\Hermes Agent CN Desktop\\hunter-v2\\run_screener_daily.bat\"",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Daily",
+                             "start":  "2026-08-10T15:45:00",
+                             "days_interval":  "1",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "HunterV2_Autostart",
+        "task_path":  "\\",
+        "user_id":  "User871619",
+        "logon_type":  "Interactive",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "D:\\Hermes",
+                            "arguments":  "Agent CN Desktop\\hunter-v2\\start_unattended.bat",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Logon",
+                             "start":  "2026-08-09T21:50:00",
+                             "days_interval":  "",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    },
+    {
+        "task_name":  "HunterV2_Daily_0830",
+        "task_path":  "\\",
+        "user_id":  "User871619",
+        "logon_type":  "Interactive",
+        "run_level":  "Limited",
+        "actions":  [
+                        {
+                            "execute":  "cmd.exe",
+                            "arguments":  "/c \"D:\\Hermes Agent CN Desktop\\hunter-v2\\start_unattended.bat\"",
+                            "working_dir":  null
+                        }
+                    ],
+        "triggers":  [
+                         {
+                             "type":  "Daily",
+                             "start":  "2026-08-09T08:30:00",
+                             "days_interval":  "1",
+                             "days_of_week":  null,
+                             "rep_interval":  ""
+                         }
+                     ]
+    }
+]

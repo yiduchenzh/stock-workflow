@@ -1,0 +1,542 @@
+﻿[
+    {
+        "TaskName":  "AuroraClose",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "SYSTEM",
+        "RunLevel":  0,
+        "LogonType":  5,
+        "LastRun":  "\/Date(1790492522000)\/",
+        "NextRun":  "\/Date(1790578922000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "d:\\Aurora\\.venv\\Scripts\\python.exe",
+                            "Arguments":  "d:\\Aurora\\daily_run.py --phase close",
+                            "WorkingDirectory":  "d:\\Aurora"
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskDailyTrigger",
+                             "StartBoundary":  "2026-09-24T15:02:00",
+                             "DaysInterval":  1,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "AuroraDaemon",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "User871619",
+        "RunLevel":  0,
+        "LogonType":  3,
+        "LastRun":  "\/Date(1790317891000)\/",
+        "NextRun":  null,
+        "LastResult":  255,
+        "Actions":  [
+                        {
+                            "Execute":  "d:\\Aurora\\start_daemon.bat",
+                            "Arguments":  null,
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskLogonTrigger",
+                             "StartBoundary":  "2026-07-03T15:41:00",
+                             "DaysInterval":  null,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "AuroraMorningRun",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "SYSTEM",
+        "RunLevel":  0,
+        "LogonType":  5,
+        "LastRun":  "\/Date(1790472325000)\/",
+        "NextRun":  "\/Date(1790558725000)\/",
+        "LastResult":  1,
+        "Actions":  [
+                        {
+                            "Execute":  "d:\\Aurora\\start_multi_test.bat",
+                            "Arguments":  null,
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskDailyTrigger",
+                             "StartBoundary":  "2026-07-03T09:25:00",
+                             "DaysInterval":  1,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "Aurora_6Agent_Monitor",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "SYSTEM",
+        "RunLevel":  0,
+        "LogonType":  5,
+        "LastRun":  "\/Date(1790474705000)\/",
+        "NextRun":  "\/Date(1790561105000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "d:\\Aurora\\.venv\\Scripts\\python.exe",
+                            "Arguments":  "d:\\Aurora\\daily_run.py --phase multi_monitor",
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskDailyTrigger",
+                             "StartBoundary":  "2026-07-03T10:05:00",
+                             "DaysInterval":  1,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "Aurora_6Agent_Morning",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "SYSTEM",
+        "RunLevel":  0,
+        "LogonType":  5,
+        "LastRun":  "\/Date(1790472508000)\/",
+        "NextRun":  "\/Date(1790558908000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "d:\\Aurora\\.venv\\Scripts\\python.exe",
+                            "Arguments":  "d:\\Aurora\\daily_run.py --phase multi_morning",
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskDailyTrigger",
+                             "StartBoundary":  "2026-07-03T09:28:00",
+                             "DaysInterval":  1,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "Aurora_6Agent_Noon",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "SYSTEM",
+        "RunLevel":  0,
+        "LogonType":  5,
+        "LastRun":  "\/Date(1790485505000)\/",
+        "NextRun":  "\/Date(1790571905000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "d:\\Aurora\\.venv\\Scripts\\python.exe",
+                            "Arguments":  "d:\\Aurora\\daily_run.py --phase multi_monitor",
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskDailyTrigger",
+                             "StartBoundary":  "2026-07-03T13:05:00",
+                             "DaysInterval":  1,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "Aurora_AuctionL2Probe",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "SYSTEM",
+        "RunLevel":  0,
+        "LogonType":  5,
+        "LastRun":  "\/Date(1790306664000)\/",
+        "NextRun":  "\/Date(1790558176000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "\"D:\\Hermes Agent CN Desktop\\stock-workflow\\deploy\\auction_l2_probe.bat\"",
+                            "Arguments":  null,
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskTimeTrigger",
+                             "StartBoundary":  "2026-09-28T09:16:00",
+                             "DaysInterval":  null,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "Aurora_Auction_0920",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "SYSTEM",
+        "RunLevel":  0,
+        "LogonType":  5,
+        "LastRun":  "\/Date(1790472020000)\/",
+        "NextRun":  "\/Date(1790558420000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "d:\\Aurora\\run_auction.bat",
+                            "Arguments":  null,
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskDailyTrigger",
+                             "StartBoundary":  "2026-07-03T09:20:00",
+                             "DaysInterval":  1,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "Aurora_FullScan_1100",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "SYSTEM",
+        "RunLevel":  0,
+        "LogonType":  5,
+        "LastRun":  "\/Date(1790478000000)\/",
+        "NextRun":  "\/Date(1790564400000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "d:\\Aurora\\run_monitor.bat",
+                            "Arguments":  null,
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskDailyTrigger",
+                             "StartBoundary":  "2026-07-03T11:00:00",
+                             "DaysInterval":  1,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "Aurora_FullScan_1430",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "SYSTEM",
+        "RunLevel":  0,
+        "LogonType":  5,
+        "LastRun":  "\/Date(1790490630000)\/",
+        "NextRun":  "\/Date(1790577030000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "d:\\Aurora\\run_monitor.bat",
+                            "Arguments":  null,
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskDailyTrigger",
+                             "StartBoundary":  "2026-07-03T14:30:00",
+                             "DaysInterval":  1,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "Aurora_Monitor_5min",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "SYSTEM",
+        "RunLevel":  0,
+        "LogonType":  5,
+        "LastRun":  "\/Date(1790503199000)\/",
+        "NextRun":  "\/Date(1790503444000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "d:\\Aurora\\run_fast_monitor.bat",
+                            "Arguments":  null,
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskTimeTrigger",
+                             "StartBoundary":  "2026-07-03T11:19:00",
+                             "DaysInterval":  null,
+                             "Repetition":  "PT5M"
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "Aurora_Morning",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "SYSTEM",
+        "RunLevel":  0,
+        "LogonType":  5,
+        "LastRun":  "\/Date(1790472935000)\/",
+        "NextRun":  "\/Date(1790559335000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "d:\\Aurora\\run_morning.bat",
+                            "Arguments":  null,
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskDailyTrigger",
+                             "StartBoundary":  "2026-06-25T09:35:00",
+                             "DaysInterval":  1,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "Aurora_Review",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "SYSTEM",
+        "RunLevel":  0,
+        "LogonType":  5,
+        "LastRun":  "\/Date(1790492705000)\/",
+        "NextRun":  "\/Date(1790579105000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "d:\\Aurora\\run_review.bat",
+                            "Arguments":  null,
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskDailyTrigger",
+                             "StartBoundary":  "2026-07-03T15:05:00",
+                             "DaysInterval":  1,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "HunterChanlunNightly_1615",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  null,
+        "UserId":  "User871619",
+        "RunLevel":  0,
+        "LogonType":  3,
+        "LastRun":  "\/Date(1790324115000)\/",
+        "NextRun":  "\/Date(1790583315000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "cmd.exe",
+                            "Arguments":  "/c \"D:\\Hermes Agent CN Desktop\\hunter-v2\\run_chanlun_nightly.bat\"",
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskWeeklyTrigger",
+                             "StartBoundary":  "2026-09-11T16:15:00+08:00",
+                             "DaysInterval":  null,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "HunterFactorPanel_1550",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "User871619",
+        "RunLevel":  0,
+        "LogonType":  3,
+        "LastRun":  "\/Date(1790322650000)\/",
+        "NextRun":  "\/Date(1790581850000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "cmd",
+                            "Arguments":  "/c \"D:\\Hermes Agent CN Desktop\\hunter-v2\\run_factor_panel_daily.bat\"",
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskWeeklyTrigger",
+                             "StartBoundary":  "2026-09-12T15:50:00",
+                             "DaysInterval":  null,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "HunterKline_Daily_1545",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "User871619",
+        "RunLevel":  0,
+        "LogonType":  3,
+        "LastRun":  "\/Date(1790495145000)\/",
+        "NextRun":  "\/Date(1790581545000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "cmd.exe",
+                            "Arguments":  "/c \"D:\\Hermes Agent CN Desktop\\limitup-system\\build_kline_db.bat\"",
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskDailyTrigger",
+                             "StartBoundary":  "2026-08-09T15:45:00",
+                             "DaysInterval":  1,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "HunterScreenerPerf_Daily_1600",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "User871619",
+        "RunLevel":  0,
+        "LogonType":  3,
+        "LastRun":  "\/Date(1790496000000)\/",
+        "NextRun":  "\/Date(1790582400000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "cmd.exe",
+                            "Arguments":  "/c \"D:\\Hermes Agent CN Desktop\\hunter-v2\\run_screener_perf.bat\"",
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskDailyTrigger",
+                             "StartBoundary":  "2026-08-10T16:00:00",
+                             "DaysInterval":  1,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "HunterScreener_Daily_1545",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "User871619",
+        "RunLevel":  0,
+        "LogonType":  3,
+        "LastRun":  "\/Date(1790495145000)\/",
+        "NextRun":  "\/Date(1790581545000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "cmd.exe",
+                            "Arguments":  "/c \"D:\\Hermes Agent CN Desktop\\hunter-v2\\run_screener_daily.bat\"",
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskDailyTrigger",
+                             "StartBoundary":  "2026-08-10T15:45:00",
+                             "DaysInterval":  1,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "HunterV2_Autostart",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "User871619",
+        "RunLevel":  0,
+        "LogonType":  3,
+        "LastRun":  "\/Date(1790317830000)\/",
+        "NextRun":  null,
+        "LastResult":  2147942402,
+        "Actions":  [
+                        {
+                            "Execute":  "D:\\Hermes",
+                            "Arguments":  "Agent CN Desktop\\hunter-v2\\start_unattended.bat",
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskLogonTrigger",
+                             "StartBoundary":  "2026-08-09T21:50:00",
+                             "DaysInterval":  null,
+                             "Repetition":  null
+                         }
+                     ]
+    },
+    {
+        "TaskName":  "HunterV2_Daily_0830",
+        "TaskPath":  "\\",
+        "State":  3,
+        "Author":  "DESKTOP-2D8A9BD\\User871619",
+        "UserId":  "User871619",
+        "RunLevel":  0,
+        "LogonType":  3,
+        "LastRun":  "\/Date(1790469030000)\/",
+        "NextRun":  "\/Date(1790555430000)\/",
+        "LastResult":  0,
+        "Actions":  [
+                        {
+                            "Execute":  "cmd.exe",
+                            "Arguments":  "/c \"D:\\Hermes Agent CN Desktop\\hunter-v2\\start_unattended.bat\"",
+                            "WorkingDirectory":  null
+                        }
+                    ],
+        "Triggers":  [
+                         {
+                             "Type":  "MSFT_TaskDailyTrigger",
+                             "StartBoundary":  "2026-08-09T08:30:00",
+                             "DaysInterval":  1,
+                             "Repetition":  null
+                         }
+                     ]
+    }
+]

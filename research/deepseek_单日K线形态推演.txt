@@ -1,0 +1,1596 @@
+
+单日K线形态推演
+缠中说禅技术分析理论详解
+获取API密钥指南
+AI一人公司参与指南
+Python并发编程任务管理重构优化
+Python多线程多任务管理器应用示例
+Python多线程多任务管理系统示例
+Python多线程任务管理应用示例
+使用pyside6 pyqtgraph 绘制股票k线图，数据来
+DevEco Studio设置中文教程
+Python股票数据缓存与定时更新方案
+单日K线形态推演
+用户想要一个完整的 Python 实现，把前面讨论的所有内容结合起来：用前一天的 OHLC 来推算今天的关键价位，对 12 种 K 线形态进行分类，用 1 分钟数据合成更大周期，并加入缠论元素（包含处理、分型、笔、线段、中枢、背驰）。
+
+让我来设计一个完整的系统：
+
+数据层：OHLC 数据结构
+
+K 线形态分类：12 种基本形态
+
+关键价位计算：前一天的 OHLC → 枢轴点、斐波那契、扩展位
+
+多周期聚合：1 分钟 → 5 分钟 → 15 分钟 → 30 分钟 → 60 分钟 → 日线
+
+缠论：
+
+包含处理
+
+分型识别
+
+笔
+
+线段
+
+中枢
+
+背驰（简化版）
+
+形态推演：根据当前价格，给出候选形态集合
+
+交易信号：把关键价位与结构结合起来
+
+让我写出干净、有注释的代码。
+
+我尽量做得完整，但保持精简。
+
+python
+# -*- coding: utf-8 -*-
+"""
+融合 K 线形态推演 + 关键价位 + 缠论的交易推理系统
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple, Dict
+from enum import Enum
+import math
+
+
+# ========== 数据结构 ==========
+
+@dataclass
+class Bar:
+    """单根 K 线"""
+    dt: str  # 时间戳
+    o: float
+    h: float
+    l: float
+    c: float
+    v: float = 0.0
+
+    @property
+    def upper_shadow(self) -> float:
+        return self.h - max(self.o, self.c)
+
+    @property
+    def lower_shadow(self) -> float:
+        return min(self.o, self.c) - self.l
+
+    @property
+    def body(self) -> float:
+        return abs(self.c - self.o)
+
+    @property
+    def amplitude(self) -> float:
+        return self.h - self.l
+
+    @property
+    def direction(self) -> str:
+        if self.c > self.o:
+            return "阳"
+        elif self.c < self.o:
+            return "阴"
+        return "十字"
+
+
+# ========== K 线 12 形态分类 ==========
+
+class KLineShape(Enum):
+    BULL_MARUBOZU = "光头光脚阳线"
+    BULL_LOWER = "带下影阳线"
+    BULL_UPPER = "带上影阳线"
+    BULL_BOTH = "带上下影阳线"
+    BEAR_MARUBOZU = "光头光脚阴线"
+    BEAR_LOWER = "带下影阴线"
+    BEAR_UPPER = "带上影阴线"
+    BEAR_BOTH = "带上下影阴线"
+    DOJI_FLAT = "一字线"
+    DOJI_T = "T字线"
+    DOJI_INV_T = "倒T字线"
+    DOJI = "十字星"
+
+
+def classify_bar(bar: Bar, eps: float = 1e-9) -> KLineShape:
+    """将单根 K 线分类到 12 种基本形态之一"""
+    u = bar.upper_shadow
+    d = bar.lower_shadow
+    has_u = u > eps
+    has_d = d > eps
+    direction = bar.direction
+
+    if direction == "阳":
+        if not has_u and not has_d:
+            return KLineShape.BULL_MARUBOZU
+        if not has_u and has_d:
+            return KLineShape.BULL_LOWER
+        if has_u and not has_d:
+            return KLineShape.BULL_UPPER
+        return KLineShape.BULL_BOTH
+    elif direction == "阴":
+        if not has_u and not has_d:
+            return KLineShape.BEAR_MARUBOZU
+        if not has_u and has_d:
+            return KLineShape.BEAR_LOWER
+        if has_u and not has_d:
+            return KLineShape.BEAR_UPPER
+        return KLineShape.BEAR_BOTH
+    else:  # 十字
+        if not has_u and not has_d:
+            return KLineShape.DOJI_FLAT
+        if not has_u and has_d:
+            return KLineShape.DOJI_T
+        if has_u and not has_d:
+            return KLineShape.DOJI_INV_T
+        return KLineShape.DOJI
+接下来是关键价位部分：
+
+python
+# ========== 关键价位计算 ==========
+
+@dataclass
+class KeyLevels:
+    """基于前日 OHLC 推算的今日关键价位"""
+    prev_o: float
+    prev_h: float
+    prev_l: float
+    prev_c: float
+
+    # 基本位置
+    entity_top: float = 0.0
+    entity_bottom: float = 0.0
+    entity_mid: float = 0.0
+    range_mid: float = 0.0
+    range: float = 0.0
+
+    # 斐波那契
+    fib_382: float = 0.0
+    fib_500: float = 0.0
+    fib_618: float = 0.0
+    fib_786: float = 0.0
+    fib_ext_1272: float = 0.0
+    fib_ext_1618: float = 0.0
+
+    # 枢轴
+    pivot: float = 0.0
+    r1: float = 0.0
+    r2: float = 0.0
+    r3: float = 0.0
+    s1: float = 0.0
+    s2: float = 0.0
+    s3: float = 0.0
+
+    # 涨跌停（默认主板 10%）
+    limit_up: float = 0.0
+    limit_down: float = 0.0
+
+    def compute(self, limit_pct: float = 0.10):
+        po, ph, pl, pc = self.prev_o, self.prev_h, self.prev_l, self.prev_c
+        self.entity_top = max(po, pc)
+        self.entity_bottom = min(po, pc)
+        self.entity_mid = (po + pc) / 2
+        self.range_mid = (ph + pl) / 2
+        self.range = ph - pl
+
+        # 斐波那契回撤
+        self.fib_382 = pl + 0.382 * self.range
+        self.fib_500 = pl + 0.500 * self.range
+        self.fib_618 = pl + 0.618 * self.range
+        self.fib_786 = pl + 0.786 * self.range
+        self.fib_ext_1272 = pl + 1.272 * self.range
+        self.fib_ext_1618 = pl + 1.618 * self.range
+
+        # 经典枢轴
+        p = (ph + pl + pc) / 3
+        self.pivot = p
+        self.r1 = 2 * p - pl
+        self.s1 = 2 * p - ph
+        self.r2 = p + (ph - pl)
+        self.s2 = p - (ph - pl)
+        self.r3 = ph + 2 * (p - pl)
+        self.s3 = pl - 2 * (ph - p)
+
+        # 涨跌停
+        self.limit_up = round(pc * (1 + limit_pct), 2)
+        self.limit_down = round(pc * (1 - limit_pct), 2)
+        return self
+
+    def as_dict(self):
+        return {
+            "前高 PH": self.prev_h, "前收 PC": self.prev_c,
+            "前开 PO": self.prev_o, "前低 PL": self.prev_l,
+            "实体上沿": self.entity_top, "实体下沿": self.entity_bottom,
+            "实体中点": self.entity_mid, "区间中点": self.range_mid,
+            "Fib 0.382": self.fib_382, "Fib 0.500": self.fib_500,
+            "Fib 0.618": self.fib_618, "Fib 0.786": self.fib_786,
+            "Fib Ext 1.272": self.fib_ext_1272, "Fib Ext 1.618": self.fib_ext_1618,
+            "Pivot": self.pivot, "R1": self.r1, "R2": self.r2, "R3": self.r3,
+            "S1": self.s1, "S2": self.s2, "S3": self.s3,
+            "涨停": self.limit_up, "跌停": self.limit_down,
+        }
+接下来是多周期聚合和缠论：
+
+python
+# ========== 多周期聚合 ==========
+
+def aggregate(bars: List[Bar], n: int) -> List[Bar]:
+    """将 n 根小周期 K 线合成一根大周期 K 线"""
+    result = []
+    for i in range(0, len(bars) - n + 1, n):
+        chunk = bars[i:i+n]
+        result.append(Bar(
+            dt=chunk[0].dt,
+            o=chunk[0].o,
+            h=max(b.h for b in chunk),
+            l=min(b.l for b in chunk),
+            c=chunk[-1].c,
+            v=sum(b.v for b in chunk),
+        ))
+    return result
+
+
+# ========== 缠论：包含处理 ==========
+
+@dataclass
+class MergedBar:
+    """经过包含处理后的合并 K 线"""
+    dt_start: str
+    dt_end: str
+    h: float
+    l: float
+    direction: int  # 1 向上合并，-1 向下合并
+    raw: Bar
+
+
+def merge_inclusion(bars: List[Bar]) -> List[MergedBar]:
+    """缠论包含处理"""
+    if not bars:
+        return []
+    
+    merged = [MergedBar(bars[0].dt, bars[0].dt, bars[0].h, bars[0].l, 1, bars[0])]
+    direction = 1
+
+    for bar in bars[1:]:
+        last = merged[-1]
+        # 判断是否包含
+        contains = (bar.h <= last.h and bar.l >= last.l) or \
+                   (bar.h >= last.h and bar.l <= last.l)
+        if not contains:
+            # 无包含，确定方向
+            if bar.h > last.h and bar.l > last.l:
+                direction = 1
+            elif bar.h < last.h and bar.l < last.l:
+                direction = -1
+            merged.append(MergedBar(bar.dt, bar.dt, bar.h, bar.l, direction, bar))
+        else:
+            # 有包含，按方向合并
+            if direction == 1:
+                new_h = max(last.h, bar.h)
+                new_l = max(last.l, bar.l)
+            else:
+                new_h = min(last.h, bar.h)
+                new_l = min(last.l, bar.l)
+            merged[-1] = MergedBar(last.dt_start, bar.dt, new_h, new_l, direction, bar)
+    return merged
+然后是分型和笔：
+
+python
+# ========== 缠论：分型 ==========
+
+class FractalType(Enum):
+    TOP = "顶分型"
+    BOTTOM = "底分型"
+
+
+@dataclass
+class Fractal:
+    type: FractalType
+    idx: int  # 在合并 K 线序列中的索引
+    h: float
+    l: float
+    dt: str
+
+
+def find_fractals(merged: List[MergedBar]) -> List[Fractal]:
+    """识别顶底分型（使用合并后 K 线）"""
+    fractals = []
+    for i in range(1, len(merged) - 1):
+        prev, cur, nxt = merged[i-1], merged[i], merged[i+1]
+        # 顶分型：中间 K 线高点最高，低点也最高
+        if cur.h > prev.h and cur.h > nxt.h and cur.l > prev.l and cur.l > nxt.l:
+            fractals.append(Fractal(FractalType.TOP, i, cur.h, cur.l, cur.dt_end))
+        # 底分型：中间 K 线低点最低，高点也最低
+        elif cur.l < prev.l and cur.l < nxt.l and cur.h < prev.h and cur.h < nxt.h:
+            fractals.append(Fractal(FractalType.BOTTOM, i, cur.h, cur.l, cur.dt_end))
+    return fractals
+
+
+# ========== 缠论：笔 ==========
+
+@dataclass
+class Stroke:
+    """笔：相邻的顶分型和底分型之间的连接"""
+    start: Fractal
+    end: Fractal
+    direction: int  # 1 向上，-1 向下
+
+
+def build_strokes(fractals: List[Fractal], min_bars: int = 4) -> List[Stroke]:
+    """构造笔（简化版：相邻顶底交替，且间隔至少 min_bars 根合并 K 线）"""
+    if len(fractals) < 2:
+        return []
+    
+    strokes = []
+    # 过滤出有效分型序列：顶底交替
+    valid = [fractals[0]]
+    for f in fractals[1:]:
+        if f.type != valid[-1].type:
+            # 同类型相邻，取更极端的
+            if len(valid) >= 2 and f.type == valid[-2].type:
+                # 比较保留更极端
+                if f.type == FractalType.TOP and f.h > valid[-2].h:
+                    valid[-1] = f
+                elif f.type == FractalType.BOTTOM and f.l < valid[-2].l:
+                    valid[-1] = f
+            else:
+                valid.append(f)
+        else:
+            # 同类型，保留更极端的
+            if f.type == FractalType.TOP and f.h > valid[-1].h:
+                valid[-1] = f
+            elif f.type == FractalType.BOTTOM and f.l < valid[-1].l:
+                valid[-1] = f
+    
+    for i in range(len(valid) - 1):
+        a, b = valid[i], valid[i+1]
+        if abs(b.idx - a.idx) >= min_bars:
+            direction = 1 if b.type == FractalType.TOP else -1
+            strokes.append(Stroke(a, b, direction))
+    return strokes
+然后是中枢：
+
+python
+# ========== 缠论：中枢 ==========
+
+@dataclass
+class Center:
+    """中枢：至少三个连续次级别走势重叠部分"""
+    zg: float  # 中枢上沿
+    zd: float  # 中枢下沿
+    start_idx: int
+    end_idx: int
+    strokes: List[Stroke] = field(default_factory=list)
+
+    @property
+    def height(self) -> float:
+        return self.zg - self.zd
+
+
+def find_centers(strokes: List[Stroke], min_strokes: int = 3) -> List[Center]:
+    """中枢识别：连续 3 笔以上的重叠区间"""
+    centers = []
+    i = 0
+    while i + min_strokes - 1 < len(strokes):
+        group = strokes[i:i+min_strokes]
+        # 计算重叠区间
+        highs = []
+        lows = []
+        for s in group:
+            highs.append(max(s.start.h, s.end.h))
+            lows.append(min(s.start.l, s.end.l))
+        zg = min(highs)  # 中枢上沿 = 各笔高点中的最小值
+        zd = max(lows)   # 中枢下沿 = 各笔低点中的最大值
+        if zg > zd:
+            centers.append(Center(zg, zd, group[0].start.idx, group[-1].end.idx, group))
+            i += 1
+        else:
+            i += 1
+    return centers
+最后是形态推演引擎：
+
+python
+# ========== 形态推演引擎 ==========
+
+class ShapeInference:
+    """根据当前价格推演大周期最终形态候选集"""
+
+    def __init__(self, target_bars: int, o: float, h_t: float, l_t: float, c_t: float, bars_done: int):
+        self.o = o
+        self.h_t = h_t
+        self.l_t = l_t
+        self.c_t = c_t
+        self.bars_done = bars_done
+        self.target_bars = target_bars
+
+    def infer_candidates(self) -> List[KLineShape]:
+        """
+        根据当前 o/h/l/c 以及剩余时间，给出候选形态
+        简化逻辑：
+        - 如果极值已锁定（时间已尽），唯一确定
+        - 否则根据剩余可能的波动方向枚举
+        """
+        from itertools import product
+
+        candidates = set()
+        remaining = self.target_bars - self.bars_done
+
+        # 如果已经走完，唯一确定
+        if remaining <= 0:
+            return [classify_bar(Bar("", self.o, self.h_t, self.l_t, self.c_t))]
+
+        # 枚举剩余可能：未来最高可能 >= h_t，未来最低可能 <= l_t
+        # 收盘可能在任何位置
+        # 这里用连续假设，判断最终可能落入哪些形态类别
+        # 简化：考虑 future_h 可选 h_t 或更高，future_l 可选 l_t 或更低
+        possible_h = [self.h_t]
+        possible_l = [self.l_t]
+
+        # 如果还有时间，理论上可能创新高/新低（保守枚举）
+        # 这里的 epsilon 可以按波动率替换
+        eps = (self.h_t - self.l_t) * 0.1 + 1e-9
+        possible_h.append(self.h_t + eps)
+        possible_l.append(self.l_t - eps)
+
+        for fh, fl in product(possible_h, possible_l):
+            if fh < fl:
+                continue
+            # 收盘价可能在整个区间内
+            # 为了分类，尝试几个代表性收盘价
+            for fc in [self.c_t, fh, fl, (fh+fl)/2, self.o, (self.o+fh)/2, (self.o+fl)/2]:
+                if not (fl <= fc <= fh):
+                    continue
+                if fc <= 0:
+                    continue
+                bar = Bar("", self.o, fh, fl, fc)
+                candidates.add(classify_bar(bar))
+
+        # 加入当前暂定形态
+        candidates.add(classify_bar(Bar("", self.o, self.h_t, self.l_t, self.c_t)))
+        return sorted(candidates, key=lambda x: x.value)
+嗯，这段推演逻辑确实有点绕。让我想想怎么把它弄得更干净、更有原则。
+
+更好的做法是：给定当前的 O、H、L、C，以及我们是否认为还会出现新的极值，直接确定哪些形态是可能的。
+
+其实，对于给定 O 和当前的 H_t、L_t、C_t，如果剩余时间 H 可以 ≥ H_t、L 可以 ≤ L_t、C 可以落在任何位置：
+
+最终 H 可以 ≥ H_t，最终 L 可以 ≤ L_t
+
+最终 O 固定
+
+最终 C 可以落在 [L, H] 内
+
+所以我们需要判断：给定 O 固定，是否存在最终 (H, L, C)，满足 L ≤ H，O ∈ [L,H]，C ∈ [L,H]，H ≥ H_t，L ≤ L_t，使得它分类为形态 X。
+
+对于 12 种形态中的每一种，我们都可以检查是否存在这样的 (H, L, C)。
+
+让我把它写得更清楚：
+
+光头光脚阳线：C > O，H = C，L = O。需要 O > L_t？不，需要 L = O 且 L ≤ L_t 意味着 O ≤ L_t。并且 H = C ≥ H_t，C = H > O。所以需要 O ≤ L_t，且存在 C ≥ max(H_t, O)，C > O。
+
+带下影阳线：C > O，H = C，L < O。需要 L ≤ min(L_t, ...)，L < O。
+
+以此类推。
+
+但这样写起来太繁琐了，也没必要。我就用一个实用一点的枚举思路：直接检查各种可能性即可。
+
+其实，对于实际交易系统来说，关键是：
+
+把已经确定的形态分好类
+
+给出“当前暂时形态”
+
+判断剩余可能的范围（极值能否被刷新）
+
+据此列出候选集
+
+我就用枚举加采样来做，够用了。
+
+现在把完整系统组装起来。让我写个主函数。
+
+python
+def demo():
+    # 构造前日 K 线
+    prev_bar = Bar("D-1", o=10.00, h=10.50, l=9.80, c=10.30)
+
+    # 计算关键位
+    kl = KeyLevels(prev_bar.o, prev_bar.h, prev_bar.l, prev_bar.c).compute()
+    print("=== 前日 K 线 ===")
+    print(f"O={prev_bar.o} H={prev_bar.h} L={prev_bar.l} C={prev_bar.c}")
+    print(f"形态: {classify_bar(prev_bar).value}")
+    print("\n=== 今日关键位 ===")
+    for k, v in kl.as_dict().items():
+        print(f"  {k:15s} = {v:.3f}")
+    ...
+让我把最终代码整理干净。
+
+我还想加一个候选形态推演部分，用来展示在给定当前价格的情况下，可能会形成哪些形态。
+
+对于推演函数，让我更仔细地写：
+
+python
+def infer_candidates(o, h_t, l_t, c_t, h_max=None, l_min=None, samples=21):
+    """
+    根据当前状态推演最终可能形态。
+    h_max: 剩余时间可能达到的最高（None 表示无限）
+    l_min: 剩余时间可能达到的最低（None 表示无限）
+    """
+    # 如果没给边界，用当前极值稍作延展
+    if h_max is None:
+        h_max = h_t + (h_t - l_t)  # 假设最多再波动一个当前振幅
+    if l_min is None:
+        l_min = l_t - (h_t - l_t)
+    
+    candidates = set()
+    # 最终 H ∈ [h_t, h_max], L ∈ [l_min, l_t], C ∈ [L, H]
+    # 采样
+    hs = [h_t + (h_max - h_t) * i / (samples - 1) for i in range(samples)]
+    ls = [l_min + (l_t - l_min) * i / (samples - 1) for i in range(samples)]
+    
+    for fh in hs:
+        for fl in ls:
+            if fh < fl:
+                continue
+            if not (fl <= o <= fh):
+                continue
+            for fc in [fl, (fl+fh)/2, fh, c_t, o]:
+                if fl <= fc <= fh:
+                    try:
+                        candidates.add(classify_bar(Bar("", o, fh, fl, fc)))
+                    except:
+                        pass
+    return sorted(candidates, key=lambda x: x.value)
+好。现在让我把整段代码写出来，并加上一个演示。
+
+我想写一个完整、可运行的脚本。代码会很长，但应该结构清晰。
+
+还要加上：
+
+从前一日 OHLC 推算关键价位
+
+从 1 分钟数据聚合出多周期 K 线
+
+缠论包含处理
+
+分型识别
+
+笔
+
+中枢
+
+12 种形态分类
+
+带候选集的形态推演
+
+再加一个演示用的 main 函数。
+
+要注意长度和完整性之间的平衡。我会写一个完整、可运行的版本。
+
+让我把最终代码定下来。
+
+其实，重新审视一下笔的构建——我写的那个过滤逻辑有点乱。让我简化一下：
+
+标准做法是：
+
+找到所有分型
+
+如果相邻两个分型是同一类型，保留更极端的那一个
+
+如果两个分型不同类型，但中间 K 线数量太少，就跳过
+
+最终序列应该顶底交替出现
+
+让我重新写：
+
+python
+def build_strokes(fractals, min_gap=4):
+    if not fractals:
+        return []
+    
+    # 第一步：同类型相邻分型，保留更极端的
+    filtered = [fractals[0]]
+    for f in fractals[1:]:
+        last = filtered[-1]
+        if f.type == last.type:
+            # 同类型，保留更极端的
+            if f.type == FractalType.TOP and f.h > last.h:
+                filtered[-1] = f
+            elif f.type == FractalType.BOTTOM and f.l < last.l:
+                filtered[-1] = f
+        else:
+            filtered.append(f)
+    
+    # 第二步：检查间隔，合并过近的分型
+    result = []
+    i = 0
+    while i < len(filtered) - 1:
+        a, b = filtered[i], filtered[i+1]
+        if abs(b.idx - a.idx) >= min_gap:
+            result.append(Stroke(a, b, 1 if b.type == FractalType.TOP else -1))
+            i += 1
+        else:
+            # 间隔太短，跳过 a，尝试用下一个与 b 配对
+            # 或者跳过 b
+            i += 1
+    return result
+嗯，还是不够好。干脆做得简单点——只要顶底交替就行，把 min_gap 检查改成一个软约束。
+
+好的，就用简化版。
+
+现在开始写最终代码。
+
+其实再仔细想想——用户已经做了很多理论讨论，想看到代码。我应该给出干净、结构清晰、能运行的代码。别过度设计，但也别太简陋。
+
+让我把结构定下来：
+
+text
+1. 数据结构 (Bar, KLineShape)
+2. K 线形态分类 (12 种)
+3. 关键价位计算 (KeyLevels)
+4. 多周期聚合
+5. 缠论模块 (包含处理、分型、笔、中枢)
+6. 形态推演
+7. 演示 main()
+开始写。
+
+嗯，我还得处理一下“十字”这个分类。当 C ≈ O 时，严格来说是 C == O。但实际中会有浮点误差，所以我得用一个很小的 epsilon。
+
+不，其实精确的十字本来就很少见，所以要不要加一个小容差？分类器里我还是用精确相等，但会记着这一点。
+
+其实，对于实际交易来说，我们有时把 C == O 当作“十字”，但很多时候只是很小很小的实体。现在先保持精确。
+
+好了，开始写最终代码。
+
+下面是一套把前面讨论的内容落地成可运行 Python 的完整框架。包含：前日OHLC→关键位推算 → 12形态分类 → 多周期聚合 → 缠论包含处理/分型/笔/中枢 → 今日形态候选集推演。
+
+代码结构清晰，可以直接跑，也便于后续接入实盘数据。
+
+python
+# -*- coding: utf-8 -*-
+"""
+融合系统：
+  前日OHLC → 关键位 → 今日形态候选集
+  + 多周期聚合 + 缠论结构（包含、分型、笔、中枢）
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Tuple
+from enum import Enum
+from itertools import product
+import math
+
+
+# =========================================================
+# 1. 基础数据结构
+# =========================================================
+
+@dataclass
+class Bar:
+    """单根 K 线"""
+    dt: str
+    o: float
+    h: float
+    l: float
+    c: float
+    v: float = 0.0
+
+    @property
+    def upper_shadow(self) -> float:
+        return self.h - max(self.o, self.c)
+
+    @property
+    def lower_shadow(self) -> float:
+        return min(self.o, self.c) - self.l
+
+    @property
+    def body(self) -> float:
+        return abs(self.c - self.o)
+
+    @property
+    def amplitude(self) -> float:
+        return self.h - self.l
+
+    @property
+    def direction(self) -> str:
+        if self.c > self.o:
+            return "阳"
+        if self.c < self.o:
+            return "阴"
+        return "十字"
+
+
+# =========================================================
+# 2. K线 12 基本形态
+# =========================================================
+
+class KLineShape(Enum):
+    BULL_MARUBOZU = "光头光脚阳线"
+    BULL_LOWER    = "带下影阳线"
+    BULL_UPPER    = "带上影阳线"
+    BULL_BOTH     = "带上下影阳线"
+    BEAR_MARUBOZU = "光头光脚阴线"
+    BEAR_LOWER    = "带下影阴线"
+    BEAR_UPPER    = "带上影阴线"
+    BEAR_BOTH     = "带上下影阴线"
+    DOJI_FLAT     = "一字线"
+    DOJI_T        = "T字线"
+    DOJI_INV_T    = "倒T字线"
+    DOJI          = "十字星"
+
+
+def classify_bar(bar: Bar, eps: float = 1e-9) -> KLineShape:
+    """单根 K 线 → 12 形态之一"""
+    u = bar.upper_shadow
+    d = bar.lower_shadow
+    has_u = u > eps
+    has_d = d > eps
+
+    if bar.c > bar.o:
+        if not has_u and not has_d: return KLineShape.BULL_MARUBOZU
+        if not has_u and has_d:     return KLineShape.BULL_LOWER
+        if has_u and not has_d:     return KLineShape.BULL_UPPER
+        return KLineShape.BULL_BOTH
+    if bar.c < bar.o:
+        if not has_u and not has_d: return KLineShape.BEAR_MARUBOZU
+        if not has_u and has_d:     return KLineShape.BEAR_LOWER
+        if has_u and not has_d:     return KLineShape.BEAR_UPPER
+        return KLineShape.BEAR_BOTH
+    # 十字
+    if not has_u and not has_d: return KLineShape.DOJI_FLAT
+    if not has_u and has_d:     return KLineShape.DOJI_T
+    if has_u and not has_d:     return KLineShape.DOJI_INV_T
+    return KLineShape.DOJI
+
+
+# =========================================================
+# 3. 前日 OHLC → 今日关键位
+# =========================================================
+
+@dataclass
+class KeyLevels:
+    prev_o: float
+    prev_h: float
+    prev_l: float
+    prev_c: float
+
+    # 基本
+    entity_top: float = 0.0
+    entity_bottom: float = 0.0
+    entity_mid: float = 0.0
+    range_mid: float = 0.0
+    rng: float = 0.0
+
+    # 斐波那契
+    fib_382: float = 0.0
+    fib_500: float = 0.0
+    fib_618: float = 0.0
+    fib_786: float = 0.0
+    fib_ext_1272: float = 0.0
+    fib_ext_1618: float = 0.0
+
+    # 枢轴
+    pivot: float = 0.0
+    r1: float = 0.0; r2: float = 0.0; r3: float = 0.0
+    s1: float = 0.0; s2: float = 0.0; s3: float = 0.0
+
+    # 涨跌停
+    limit_up: float = 0.0
+    limit_down: float = 0.0
+
+    def compute(self, limit_pct: float = 0.10) -> "KeyLevels":
+        po, ph, pl, pc = self.prev_o, self.prev_h, self.prev_l, self.prev_c
+        self.entity_top = max(po, pc)
+        self.entity_bottom = min(po, pc)
+        self.entity_mid = (po + pc) / 2
+        self.range_mid = (ph + pl) / 2
+        self.rng = ph - pl
+        r = self.rng
+
+        self.fib_382 = pl + 0.382 * r
+        self.fib_500 = pl + 0.500 * r
+        self.fib_618 = pl + 0.618 * r
+        self.fib_786 = pl + 0.786 * r
+        self.fib_ext_1272 = pl + 1.272 * r
+        self.fib_ext_1618 = pl + 1.618 * r
+
+        p = (ph + pl + pc) / 3
+        self.pivot = p
+        self.r1 = 2 * p - pl
+        self.s1 = 2 * p - ph
+        self.r2 = p + (ph - pl)
+        self.s2 = p - (ph - pl)
+        self.r3 = ph + 2 * (p - pl)
+        self.s3 = pl - 2 * (ph - p)
+
+        self.limit_up = round(pc * (1 + limit_pct), 2)
+        self.limit_down = round(pc * (1 - limit_pct), 2)
+        return self
+
+    def as_dict(self) -> Dict[str, float]:
+        return {
+            "前高 PH": self.prev_h, "前收 PC": self.prev_c,
+            "前开 PO": self.prev_o, "前低 PL": self.prev_l,
+            "实体上沿": self.entity_top, "实体下沿": self.entity_bottom,
+            "实体中点": self.entity_mid, "区间中点": self.range_mid,
+            "Fib 0.382": self.fib_382, "Fib 0.500": self.fib_500,
+            "Fib 0.618": self.fib_618, "Fib 0.786": self.fib_786,
+            "Fib Ext 1.272": self.fib_ext_1272, "Fib Ext 1.618": self.fib_ext_1618,
+            "Pivot": self.pivot,
+            "R1": self.r1, "R2": self.r2, "R3": self.r3,
+            "S1": self.s1, "S2": self.s2, "S3": self.s3,
+            "涨停": self.limit_up, "跌停": self.limit_down,
+        }
+
+
+# =========================================================
+# 4. 多周期聚合
+# =========================================================
+
+def aggregate(bars: List[Bar], n: int) -> List[Bar]:
+    """n 根小周期 K → 1 根大周期 K"""
+    out = []
+    for i in range(0, len(bars) - n + 1, n):
+        chunk = bars[i:i+n]
+        out.append(Bar(
+            dt=chunk[0].dt,
+            o=chunk[0].o,
+            h=max(b.h for b in chunk),
+            l=min(b.l for b in chunk),
+            c=chunk[-1].c,
+            v=sum(b.v for b in chunk),
+        ))
+    return out
+
+
+# =========================================================
+# 5. 缠论：包含处理 / 分型 / 笔 / 中枢
+# =========================================================
+
+@dataclass
+class MergedBar:
+    dt_start: str
+    dt_end: str
+    h: float
+    l: float
+    direction: int   # 1 向上，-1 向下
+    raw: Bar
+
+
+def merge_inclusion(bars: List[Bar]) -> List[MergedBar]:
+    """缠论包含处理"""
+    if not bars:
+        return []
+    merged = [MergedBar(bars[0].dt, bars[0].dt, bars[0].h, bars[0].l, 1, bars[0])]
+    direction = 1
+
+    for bar in bars[1:]:
+        last = merged[-1]
+        contained = (bar.h <= last.h and bar.l >= last.l) or \
+                    (bar.h >= last.h and bar.l <= last.l)
+        if not contained:
+            if bar.h > last.h and bar.l > last.l:
+                direction = 1
+            elif bar.h < last.h and bar.l < last.l:
+                direction = -1
+            merged.append(MergedBar(bar.dt, bar.dt, bar.h, bar.l, direction, bar))
+        else:
+            if direction == 1:
+                nh = max(last.h, bar.h)
+                nl = max(last.l, bar.l)
+            else:
+                nh = min(last.h, bar.h)
+                nl = min(last.l, bar.l)
+            merged[-1] = MergedBar(last.dt_start, bar.dt, nh, nl, direction, bar)
+    return merged
+
+
+class FractalType(Enum):
+    TOP = "顶分型"
+    BOTTOM = "底分型"
+
+
+@dataclass
+class Fractal:
+    type: FractalType
+    idx: int
+    h: float
+    l: float
+    dt: str
+
+
+def find_fractals(merged: List[MergedBar]) -> List[Fractal]:
+    out = []
+    for i in range(1, len(merged) - 1):
+        p, c, n = merged[i-1], merged[i], merged[i+1]
+        if c.h > p.h and c.h > n.h and c.l > p.l and c.l > n.l:
+            out.append(Fractal(FractalType.TOP, i, c.h, c.l, c.dt_end))
+        elif c.l < p.l and c.l < n.l and c.h < p.h and c.h < n.h:
+            out.append(Fractal(FractalType.BOTTOM, i, c.h, c.l, c.dt_end))
+    return out
+
+
+@dataclass
+class Stroke:
+    start: Fractal
+    end: Fractal
+    direction: int  # 1 向上，-1 向下
+
+
+def build_strokes(fractals: List[Fractal], min_gap: int = 3) -> List[Stroke]:
+    """构造笔：顶底交替，间隔至少 min_gap"""
+    if not fractals:
+        return []
+
+    # 同类型合并，保留更极端
+    filt = [fractals[0]]
+    for f in fractals[1:]:
+        last = filt[-1]
+        if f.type == last.type:
+            if f.type == FractalType.TOP and f.h > last.h:
+                filt[-1] = f
+            elif f.type == FractalType.BOTTOM and f.l < last.l:
+                filt[-1] = f
+        else:
+            filt.append(f)
+
+    strokes = []
+    i = 0
+    while i < len(filt) - 1:
+        a, b = filt[i], filt[i+1]
+        if abs(b.idx - a.idx) >= min_gap:
+            strokes.append(Stroke(a, b, 1 if b.type == FractalType.TOP else -1))
+            i += 1
+        else:
+            # 间隔太短，跳过当前分型
+            i += 1
+    return strokes
+
+
+@dataclass
+class Center:
+    zg: float   # 上沿
+    zd: float   # 下沿
+    start_idx: int
+    end_idx: int
+    strokes: List[Stroke] = field(default_factory=list)
+
+    @property
+    def height(self) -> float:
+        return self.zg - self.zd
+
+    def contains(self, price: float) -> bool:
+        return self.zd <= price <= self.zg
+
+
+def find_centers(strokes: List[Stroke], min_strokes: int = 3) -> List[Center]:
+    """中枢：连续 min_strokes 笔以上的重叠区间"""
+    centers = []
+    i = 0
+    while i + min_strokes - 1 < len(strokes):
+        group = strokes[i:i+min_strokes]
+        highs = [max(s.start.h, s.end.h) for s in group]
+        lows  = [min(s.start.l, s.end.l) for s in group]
+        zg = min(highs)
+        zd = max(lows)
+        if zg > zd:
+            centers.append(Center(zg, zd, group[0].start.idx, group[-1].end.idx, group))
+        i += 1
+    return centers
+
+
+# =========================================================
+# 6. 今日形态候选集推演
+# =========================================================
+
+def infer_candidates(
+    o: float,
+    h_t: float,
+    l_t: float,
+    c_t: float,
+    h_max: Optional[float] = None,
+    l_min: Optional[float] = None,
+    samples: int = 25,
+) -> List[KLineShape]:
+    """
+    根据当前状态推演最终可能形态集合。
+      o    : 今日开盘价（已固定）
+      h_t  : 当前最高
+      l_t  : 当前最低
+      c_t  : 当前价
+      h_max: 剩余时间可能达到的最高（None 则默认在 h_t 上再加一个振幅）
+      l_min: 剩余时间可能达到的最低（None 则默认在 l_t 下再减一个振幅）
+    """
+    amp = max(h_t - l_t, 1e-6)
+    if h_max is None:
+        h_max = h_t + amp
+    if l_min is None:
+        l_min = l_t - amp
+
+    cands = set()
+
+    def sample(a: float, b: float, n: int) -> List[float]:
+        if n <= 1:
+            return [a]
+        return [a + (b - a) * i / (n - 1) for i in range(n)]
+
+    hs = sample(h_t, h_max, samples)
+    ls = sample(l_min, l_t, samples)
+
+    for fh in hs:
+        for fl in ls:
+            if fh < fl:
+                continue
+            if not (fl <= o <= fh):
+                continue
+            # 收盘价采样：极值、中点、当前价、开盘
+            cs = {fl, fh, (fl+fh)/2, c_t, o}
+            for fc in cs:
+                if fl <= fc <= fh:
+                    cands.add(classify_bar(Bar("", o, fh, fl, fc)))
+
+    # 一定包含当前暂定形态
+    cands.add(classify_bar(Bar("", o, h_t, l_t, c_t)))
+    return sorted(cands, key=lambda x: x.value)
+
+
+# =========================================================
+# 7. 组合：用关键位约束候选集
+# =========================================================
+
+def constrain_by_levels(
+    candidates: List[KLineShape],
+    o: float, h_t: float, l_t: float, c_t: float,
+    levels: KeyLevels,
+) -> List[KLineShape]:
+    """
+    用前日关键位进一步排除不可能形态。
+    规则示例：
+      - 若当前最低 l_t 已跌破前低 PL，则"光头光脚阳线（最低=开盘）"若开盘>PL 不可能
+      - 若当前最高 h_t 已突破前高 PH，则"光头光脚阴线（最高=开盘）"若开盘<PH 不可能
+      - 更多规则可扩展
+    """
+    out = []
+    for s in candidates:
+        ok = True
+        # 光头光脚阳线：L == O，若 O > PL 且 l_t <= PL，则最低已低于开盘，不可能
+        if s == KLineShape.BULL_MARUBOZU:
+            if o > levels.prev_l and l_t <= levels.prev_l:
+                ok = False
+        # 光头光脚阴线：H == O，若 O < PH 且 h_t >= PH，则最高已高于开盘，不可能
+        if s == KLineShape.BEAR_MARUBOZU:
+            if o < levels.prev_h and h_t >= levels.prev_h:
+                ok = False
+        # 一字线：H == L，只有全程未波动才可能
+        if s == KLineShape.DOJI_FLAT:
+            if h_t > l_t:
+                ok = False
+        if ok:
+            out.append(s)
+    return out
+
+
+# =========================================================
+# 8. 演示
+# =========================================================
+
+def demo():
+    print("=" * 70)
+    print("【1】前日 K 线 → 今日关键位")
+    print("=" * 70)
+    prev = Bar("D-1", o=10.00, h=10.50, l=9.80, c=10.30)
+    print(f"前日：O={prev.o} H={prev.h} L={prev.l} C={prev.c} "
+          f"→ 形态：{classify_bar(prev).value}")
+
+    levels = KeyLevels(prev.o, prev.h, prev.l, prev.c).compute()
+    for k, v in levels.as_dict().items():
+        print(f"  {k:15s} = {v:.3f}")
+
+    print()
+    print("=" * 70)
+    print("【2】今日 14:50 实时状态 → 候选形态推演")
+    print("=" * 70)
+    # 今日开盘 10.30（高开在前收与前高之间）
+    o_t   = 10.30
+    h_now = 10.45
+    l_now = 10.10
+    c_now = 10.35
+
+    cur = Bar("today", o_t, h_now, l_now, c_now)
+    print(f"当前暂定形态：{classify_bar(cur).value}")
+
+    # 推演剩余 10 分钟可能达到的边界
+    cands = infer_candidates(
+        o=o_t, h_t=h_now, l_t=l_now, c_t=c_now,
+        h_max=10.55,   # 假设剩余时间最多冲到 10.55
+        l_min=10.00,   # 假设剩余时间最多砸到 10.00
+    )
+    print(f"\n候选形态（未加关键位约束）：{len(cands)} 种")
+    for s in cands:
+        print(f"  - {s.value}")
+
+    # 加关键位约束
+    cands2 = constrain_by_levels(cands, o_t, h_now, l_now, c_now, levels)
+    print(f"\n候选形态（加关键位约束后）：{len(cands2)} 种")
+    for s in cands2:
+        print(f"  - {s.value}")
+
+    print()
+    print("=" * 70)
+    print("【3】1分钟 K → 多周期聚合 + 缠论结构")
+    print("=" * 70)
+    # 模拟 30 根 1 分钟 K
+    import random
+    random.seed(7)
+    bars = []
+    price = 10.00
+    for i in range(30):
+        o = price
+        c = o + random.uniform(-0.05, 0.05)
+        h = max(o, c) + random.uniform(0, 0.03)
+        l = min(o, c) - random.uniform(0, 0.03)
+        bars.append(Bar(f"09:{30+i:02d}", o, h, l, c, 1000))
+        price = c
+
+    for n, name in [(5, "5分钟"), (15, "15分钟"), (30, "30分钟")]:
+        agg = aggregate(bars, n)
+        if agg:
+            last = agg[-1]
+            print(f"  {name}最新一根：O={last.o:.3f} H={last.h:.3f} "
+                  f"L={last.l:.3f} C={last.c:.3f} → {classify_bar(last).value}")
+
+    print("\n--- 缠论结构 ---")
+    merged = merge_inclusion(bars)
+    print(f"  1分钟原始 K 线：{len(bars)} 根 → 包含处理后：{len(merged)} 根")
+
+    fracs = find_fractals(merged)
+    print(f"  识别分型：{len(fracs)} 个")
+    for f in fracs:
+        print(f"    {f.type.value} @ {f.dt}  H={f.h:.3f} L={f.l:.3f}")
+
+    strokes = build_strokes(fracs, min_gap=3)
+    print(f"  构造笔：{len(strokes)} 笔")
+    for s in strokes:
+        arrow = "↑" if s.direction == 1 else "↓"
+        print(f"    {arrow} {s.start.dt}({s.start.l:.3f}) → "
+              f"{s.end.dt}({s.end.h:.3f})")
+
+    centers = find_centers(strokes, min_strokes=3)
+    print(f"  识别中枢：{len(centers)} 个")
+    for c in centers:
+        print(f"    中枢 [ZD={c.zd:.3f}, ZG={c.zg:.3f}] "
+              f"高度={c.height:.3f} 含 {len(c.strokes)} 笔")
+
+    print()
+    print("=" * 70)
+    print("【4】结合关键位 + 中枢：当前价格位置判定")
+    print("=" * 70)
+    if centers:
+        last_c = centers[-1]
+        if c_now > last_c.zg:
+            print(f"  当前价 {c_now} 在最后一个中枢上方 → 可能三买/中枢新生")
+        elif c_now < last_c.zd:
+            print(f"  当前价 {c_now} 在最后一个中枢下方 → 可能三卖/中枢破坏")
+        else:
+            print(f"  当前价 {c_now} 在最后一个中枢内部 → 中枢震荡")
+
+    # 关键位命中
+    print("\n  当前价与关键位关系：")
+    for name, val in levels.as_dict().items():
+        if abs(c_now - val) / max(c_now, 1e-6) < 0.005:
+            print(f"    ★ 逼近 {name} = {val:.3f}")
+
+
+if __name__ == "__main__":
+    demo()
+代码逻辑说明
+第一层：前日 OHLC → 今日关键位
+KeyLevels.compute() 生成 22 个关键位，含实体位置、斐波那契回撤/扩展、经典枢轴 R1–R3/S1–S3、涨跌停边界。
+
+第二层：实时价格 → 12 形态分类
+classify_bar() 严格按你推演的 12 种基本形态归类：阴阳 × 上下影有无。
+
+第三层：多周期聚合
+aggregate(bars, n) 严格按缠论合成规则：首根开盘、全体极值、末根收盘。
+
+第四层：缠论结构
+
+merge_inclusion()：包含处理，只保留新高新低
+
+find_fractals()：顶底分型识别
+
+build_strokes()：顶底交替构笔
+
+find_centers()：连续三笔重叠成中枢
+
+第五层：形态候选集推演
+infer_candidates() 根据剩余波动边界（h_max / l_min）枚举所有可能最终 OHLC，映射到 12 形态。
+constrain_by_levels() 用前日关键位进一步排除不可能形态。
+
+可扩展点
+接入实盘数据：把 Bar 换成 tushare/akshare 数据帧即可。
+
+波动边界改用 ATR：h_max = h_t + k*ATR，比固定振幅更合理。
+
+背驰判断：在 find_centers() 后加 MACD 面积比较，实现第一/二/三类买卖点。
+
+笔的严格化：可加新旧笔标准切换、缺口处理。
+
+回测层：用 infer_candidates() 的候选集做条件概率统计，形成真实胜率。
+
+这套代码的价值在于：每一层推理都是可验证、可回测、可单独替换的——关键位错了换关键位，包含处理错了换标准，形态推演错了换波动率模型，结构信号错了加过滤门，最后组合出来的就是一套你能自检、能迭代的完整推理系统。
+
+本回答由 AI 生成，内容仅供参考，请仔细甄别
+根据上述代码的交易系统，回测300319近2年的收益
+用户要求用之前讨论的交易系统对300319近2年进行回测。我需要获取该股票的历史数据。首先，我会搜索获取基本信息和历史数据。我将同时进行多项搜索，以获取股票基本信息、近2年的日线历史数据、以及可能存在的回测数据或分析。
+
+搜索到 33 个网页
+搜索结果显示了一些相关页面。为了获取历史数据，我需要打开一些看起来有用的页面。例如，结果4可能包含历史数据，结果0可能包含行情走势，结果1可能包含历史价格，结果3可能包含历史数据。我将同时打开这些页面。
+
+浏览 3 个页面
+中国股票日收盘行情 - 麦捷科技 - 2024年 - 同花顺
+麦捷科技（sz300319）行情走势
+麦捷科技(300319) - 历史大宗交易和股价走势图 - (广东 300319.sz)
+我需要获取近2年的历史数据。考虑到当前日期是2026年9月21日，近2年大约是从2024年9月21日到2026年9月21日。我需要找到能提供这段时间日线数据的数据源。同花顺的页面可能包含历史数据，但可能只显示部分。我可以尝试使用其他数据源，比如“stockanalysis.com”或“investing.com”。为了更全面地获取数据，我将同时进行多项搜索，以寻找可下载的历史数据或更完整的日线数据。
+
+搜索到 20 个网页
+我需要找到一种获取历史数据的方法。我可以尝试从“stockanalysis.com”获取数据，或者使用“yfinance”库。如果无法直接获取数据，我可能需要模拟数据，但用户要求的是真实回测。我可以尝试使用“akshare”或“tushare”等库，但需要网络访问。我可以先搜索“300319 stock price history yfinance”来查看是否有可用的数据源。同时，为了更全面地覆盖数据获取的可能性，我也会搜索“300319 历史行情 下载”和“300319 日线数据 2024”。
+
+搜索到 14 个网页
+我需要找到一种获取历史数据的方法。我可以尝试使用yfinance库，但需要确认股票代码。300319.SZ 可能适用于 Yahoo Finance。我可以尝试使用 yfinance 来获取数据。如果无法获取，我可能需要模拟数据，但用户要求的是真实回测。我可以先尝试搜索 "300319.SZ yfinance" 来确认。同时，为了更全面地覆盖数据获取的可能性，我也会搜索 "300319 历史数据 API" 和 "麦捷科技 300319 历史数据 下载"。
+
+搜索到 13 个网页
+我需要获取近2年的日线数据。我可以尝试使用 yfinance 库来获取数据。如果网络访问受限，我可能需要模拟数据。但用户要求的是真实回测，所以我应该尽力获取真实数据。我可以尝试从 stockanalysis.com 或 yahoo finance 获取数据。我将尝试使用 yfinance 库来获取数据。如果失败，我会考虑使用其他方法。现在，我将编写一个Python脚本来获取数据并进行回测。脚本将包括以下步骤：1. 获取300319.SZ近2年的日线数据。2. 实现之前讨论的交易系统逻辑。3. 进行回测并计算收益。4. 输出结果。我会在脚本中注释数据来源。现在开始编写脚本。
+
+抱歉，我无法直接获取 300319（麦捷科技） 近2年的逐日OHLC数据来完成真实回测。现有搜索结果中，同花顺仅有2024年12月约两周的日行情片段，不足以支撑近2年的完整回测
+；其余结果多为财务指标或实时行情页，没有提供可下载的完整历史数据。
+
+不过我可以提供一个完整可运行的回测代码框架，你只需填入从同花顺/东方财富/akshare获取的CSV数据，就能立即跑出结果。
+
+回测代码：300319 近2年
+python
+# -*- coding: utf-8 -*-
+"""
+麦捷科技 300319 回测框架
+数据格式：CSV，列名 [date, open, high, low, close, volume]
+"""
+import pandas as pd
+import numpy as np
+from dataclasses import dataclass
+from typing import List, Optional, Dict
+from enum import Enum
+
+
+# =========================================================
+# 1. 数据加载
+# =========================================================
+
+def load_data(csv_path: str) -> pd.DataFrame:
+    """
+    加载日线数据。
+    CSV 应包含列：date, open, high, low, close, volume
+    date 格式：YYYY-MM-DD
+    """
+    df = pd.read_csv(csv_path, parse_dates=["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+    df.columns = [c.lower().strip() for c in df.columns]
+    return df
+
+
+# =========================================================
+# 2. 核心数据结构
+# =========================================================
+
+@dataclass
+class Bar:
+    dt: str
+    o: float
+    h: float
+    l: float
+    c: float
+    v: float = 0.0
+
+    @property
+    def upper_shadow(self): return self.h - max(self.o, self.c)
+    @property
+    def lower_shadow(self): return min(self.o, self.c) - self.l
+    @property
+    def body(self): return abs(self.c - self.o)
+    @property
+    def direction(self):
+        if self.c > self.o: return "阳"
+        if self.c < self.o: return "阴"
+        return "十字"
+
+
+# =========================================================
+# 3. 前日 OHLC → 关键位
+# =========================================================
+
+def compute_levels(bar: Bar) -> Dict[str, float]:
+    po, ph, pl, pc = bar.o, bar.h, bar.l, bar.c
+    r = ph - pl
+    p = (ph + pl + pc) / 3
+    return {
+        "PH": ph, "PC": pc, "PO": po, "PL": pl,
+        "entity_top": max(po, pc), "entity_bottom": min(po, pc),
+        "entity_mid": (po + pc) / 2, "range_mid": (ph + pl) / 2,
+        "fib_382": pl + 0.382*r, "fib_500": pl + 0.5*r,
+        "fib_618": pl + 0.618*r, "fib_786": pl + 0.786*r,
+        "pivot": p,
+        "R1": 2*p - pl, "S1": 2*p - ph,
+        "R2": p + r,      "S2": p - r,
+        "limit_up": round(pc*1.10, 2),
+        "limit_down": round(pc*0.90, 2),
+    }
+
+
+# =========================================================
+# 4. 缠论：包含处理 / 分型 / 笔
+# =========================================================
+
+@dataclass
+class MergedBar:
+    dt_start: str; dt_end: str; h: float; l: float; direction: int
+
+def merge_inclusion(bars: List[Bar]) -> List[MergedBar]:
+    if not bars: return []
+    merged = [MergedBar(bars[0].dt, bars[0].dt, bars[0].h, bars[0].l, 1)]
+    direction = 1
+    for bar in bars[1:]:
+        last = merged[-1]
+        contained = (bar.h <= last.h and bar.l >= last.l) or \
+                    (bar.h >= last.h and bar.l <= last.l)
+        if not contained:
+            direction = 1 if (bar.h > last.h and bar.l > last.l) else -1
+            merged.append(MergedBar(bar.dt, bar.dt, bar.h, bar.l, direction))
+        else:
+            if direction == 1:
+                nh, nl = max(last.h, bar.h), max(last.l, bar.l)
+            else:
+                nh, nl = min(last.h, bar.h), min(last.l, bar.l)
+            merged[-1] = MergedBar(last.dt_start, bar.dt, nh, nl, direction)
+    return merged
+
+
+class FractalType(Enum):
+    TOP = "顶"; BOTTOM = "底"
+
+@dataclass
+class Fractal:
+    type: FractalType; idx: int; h: float; l: float; dt: str
+
+def find_fractals(merged: List[MergedBar]) -> List[Fractal]:
+    out = []
+    for i in range(1, len(merged)-1):
+        p, c, n = merged[i-1], merged[i], merged[i+1]
+        if c.h > p.h and c.h > n.h and c.l > p.l and c.l > n.l:
+            out.append(Fractal(FractalType.TOP, i, c.h, c.l, c.dt_end))
+        elif c.l < p.l and c.l < n.l and c.h < p.h and c.h < n.h:
+            out.append(Fractal(FractalType.BOTTOM, i, c.h, c.l, c.dt_end))
+    return out
+
+
+@dataclass
+class Stroke:
+    start: Fractal; end: Fractal; direction: int
+
+def build_strokes(fractals: List[Fractal], min_gap: int = 3) -> List[Stroke]:
+    if not fractals: return []
+    filt = [fractals[0]]
+    for f in fractals[1:]:
+        last = filt[-1]
+        if f.type == last.type:
+            if f.type == FractalType.TOP and f.h > last.h: filt[-1] = f
+            elif f.type == FractalType.BOTTOM and f.l < last.l: filt[-1] = f
+        else:
+            filt.append(f)
+    strokes = []
+    i = 0
+    while i < len(filt)-1:
+        a, b = filt[i], filt[i+1]
+        if abs(b.idx - a.idx) >= min_gap:
+            strokes.append(Stroke(a, b, 1 if b.type == FractalType.TOP else -1))
+            i += 1
+        else:
+            i += 1
+    return strokes
+
+
+@dataclass
+class Center:
+    zg: float; zd: float; start_idx: int; end_idx: int
+
+def find_centers(strokes: List[Stroke], min_strokes: int = 3) -> List[Center]:
+    centers = []
+    i = 0
+    while i + min_strokes - 1 < len(strokes):
+        group = strokes[i:i+min_strokes]
+        highs = [max(s.start.h, s.end.h) for s in group]
+        lows  = [min(s.start.l, s.end.l) for s in group]
+        zg, zd = min(highs), max(lows)
+        if zg > zd:
+            centers.append(Center(zg, zd, group[0].start.idx, group[-1].end.idx))
+        i += 1
+    return centers
+
+
+# =========================================================
+# 5. 策略信号
+# =========================================================
+
+def generate_signals(df: pd.DataFrame,
+                     stop_loss_pct: float = 0.05,
+                     take_profit_pct: float = 0.10) -> pd.DataFrame:
+    """
+    策略逻辑：
+      1. 用前日 OHLC 计算关键位
+      2. 用缠论分型 + 笔 + 中枢判断结构
+      3. 当日收盘价在关键位与中枢边界之间触发信号
+    """
+    signals = []
+    position = 0  # 0 空仓，1 持仓
+    entry_price = 0.0
+    entry_date = None
+
+    bars = [Bar(str(r.date.date()), r.open, r.high, r.low, r.close, r.volume)
+            for r in df.itertuples()]
+
+    for i in range(1, len(bars)):
+        today = bars[i]
+        prev  = bars[i-1]
+        levels = compute_levels(prev)
+
+        # 用近 30 根做缠论结构
+        window = bars[max(0, i-30):i+1]
+        merged = merge_inclusion(window)
+        fracs = find_fractals(merged)
+        strokes = build_strokes(fracs, min_gap=2)
+        centers = find_centers(strokes, min_strokes=3)
+
+        signal = "HOLD"
+
+        if position == 0:
+            # 买入条件示例：
+            # 当前价站上前日实体上沿，且不在最后一个中枢内部
+            above_entity = today.c > levels["entity_top"]
+            above_center = True
+            if centers:
+                above_center = today.c > centers[-1].zg
+            # 底分型确认
+            has_bottom = any(f.type == FractalType.BOTTOM for f in fracs[-3:])
+            if above_entity and above_center and has_bottom:
+                signal = "BUY"
+        else:
+            # 卖出条件：止损 / 止盈 / 跌破中枢下沿
+            pnl_pct = (today.c - entry_price) / entry_price
+            broke_center = centers and today.c < centers[-1].zd
+            if pnl_pct <= -stop_loss_pct:
+                signal = "SELL_STOP"
+            elif pnl_pct >= take_profit_pct:
+                signal = "SELL_PROFIT"
+            elif broke_center:
+                signal = "SELL_STRUCT"
+
+        # 执行
+        if signal == "BUY" and position == 0:
+            position = 1
+            entry_price = today.c
+            entry_date = today.dt
+        elif signal.startswith("SELL") and position == 1:
+            position = 0
+            signals.append({
+                "date": today.dt, "action": signal,
+                "price": today.c, "entry": entry_price,
+                "pnl_pct": (today.c - entry_price) / entry_price,
+                "hold_days": i - bars.index(next(b for b in bars if b.dt == entry_date))
+            })
+
+    return pd.DataFrame(signals)
+
+
+# =========================================================
+# 6. 回测统计
+# =========================================================
+
+def backtest_stats(trades: pd.DataFrame, initial_capital: float = 100000.0):
+    if trades.empty:
+        return {"总交易次数": 0, "总收益": 0, "胜率": 0, "最大回撤": 0}
+
+    equity = initial_capital
+    peak = equity
+    max_dd = 0.0
+
+    for _, t in trades.iterrows():
+        equity *= (1 + t["pnl_pct"])
+        peak = max(peak, equity)
+        dd = (peak - equity) / peak
+        max_dd = max(max_dd, dd)
+
+    total_return = (equity - initial_capital) / initial_capital
+    win_rate = (trades["pnl_pct"] > 0).mean()
+    avg_win = trades.loc[trades["pnl_pct"] > 0, "pnl_pct"].mean() if (trades["pnl_pct"] > 0).any() else 0
+    avg_loss = trades.loc[trades["pnl_pct"] < 0, "pnl_pct"].mean() if (trades["pnl_pct"] < 0).any() else 0
+
+    return {
+        "总交易次数": len(trades),
+        "总收益": f"{total_return:.2%}",
+        "胜率": f"{win_rate:.2%}",
+        "平均盈利": f"{avg_win:.2%}",
+        "平均亏损": f"{avg_loss:.2%}",
+        "最大回撤": f"{max_dd:.2%}",
+        "最终资金": f"{equity:.2f}",
+    }
+
+
+# =========================================================
+# 7. 主流程
+# =========================================================
+
+if __name__ == "__main__":
+    # 替换为你的 CSV 路径
+    CSV_PATH = "300319_daily.csv"
+
+    df = load_data(CSV_PATH)
+    print(f"数据范围：{df['date'].min()} ~ {df['date'].max()}")
+    print(f"共 {len(df)} 个交易日\n")
+
+    trades = generate_signals(df, stop_loss_pct=0.05, take_profit_pct=0.10)
+    print("=== 交易明细 ===")
+    print(trades.to_string(index=False))
+    print("\n=== 回测统计 ===")
+    stats = backtest_stats(trades)
+    for k, v in stats.items():
+        print(f"  {k}: {v}")
+如何获取300319近2年数据并运行
+方式一：akshare（推荐，免费）
+
+python
+import akshare as ak
+df = ak.stock_zh_a_hist(
+    symbol="300319",
+    period="daily",
+    start_date="20240921",
+    end_date="20260921",
+    adjust="qfq"
+)
+df = df.rename(columns={
+    "日期": "date", "开盘": "open", "最高": "high",
+    "最低": "low", "收盘": "close", "成交量": "volume"
+})
+df.to_csv("300319_daily.csv", index=False)
+方式二：从同花顺/东方财富导出CSV
+在同花顺行情页的“历史行情”中，选择日期范围 2024-09-21 至 2026-09-21，导出为CSV，列名调整为 date, open, high, low, close, volume。
+
+回测说明
+当前策略逻辑是一个基础骨架，触发条件为：价格站上前日实体上沿 + 不在最后一个中枢内部 + 近期出现底分型。实际运行时，你可以在 generate_signals 中调整：
+
+买卖点门：加入背驰判断、MACD 面积比较；
+
+止损止盈：当前固定 5%/10%，可改为 ATR 倍数；
+
+仓位管理：当前全仓进出，可改为分批建仓；
+
+过滤条件：加入大盘趋势、板块强度过滤。
+
+拿到真实数据后运行，就能得到 300319 近2年在该框架下的交易明细和收益统计。如果你能提供导出的 CSV 文件内容，我可以直接帮你跑出结果。
+
+
